@@ -1,0 +1,211 @@
+# Raven server -- example config.yml
+#
+# This is a sanitized copy of a working deployment config, safe to publish.
+# Every real secret has been replaced with a CHANGE_ME placeholder -- fill
+# those in before using this file. Everything else reflects a real, tested
+# configuration (mandatory 2FA, the force_password_change patch, etc).
+#
+# Note: keys prefixed OTS_ are read literally by the installed
+# `opentakserver` Python package and can't be renamed without patching that
+# package's source -- they're kept as-is here so this file actually works.
+ALLOWED_EXTENSIONS:
+- zip
+- xml
+- txt
+- pdf
+- png
+- jpg
+- jpeg
+- gif
+- kml
+- kmz
+- p12
+- tif
+- sqlite
+DEBUG: false
+JOBS:
+- func: opentakserver.blueprints.scheduled_jobs:get_adsb_data
+  id: get_adsb_data
+  minutes: 1
+  next_run_time: null
+  seconds: 0
+  trigger: interval
+- func: opentakserver.blueprints.scheduled_jobs:delete_video_recordings
+  id: delete_video_recordings
+  minutes: 1
+  next_run_time: null
+  seconds: 0
+  trigger: interval
+- day: '*'
+  func: opentakserver.blueprints.scheduled_jobs:purge_data
+  hour: 0
+  id: purge_data
+  minute: 0
+  next_run_time: null
+  trigger: cron
+- func: opentakserver.blueprints.scheduled_jobs:get_aishub_data
+  id: ais
+  minutes: 1
+  next_run_time: null
+  seconds: 0
+  trigger: interval
+- func: opentakserver.blueprints.scheduled_jobs:delete_old_data
+  id: delete_old_data
+  minutes: 1
+  next_run_time: null
+  seconds: 0
+  trigger: interval
+LDAP_BASE_DN: ''
+LDAP_BIND_USER_DN: cn=admin,ou=users=dc=example,dc=com
+LDAP_BIND_USER_PASSWORD: CHANGE_ME_LDAP_BIND_PASSWORD  # unused while OTS_ENABLE_LDAP is false
+LDAP_GROUP_DN: ''
+LDAP_HOST: 127.0.0.1
+LDAP_USER_DN: ''
+MAIL_ASCII_ATTACHMENTS: false
+MAIL_DEBUG: false
+MAIL_DEFAULT_SENDER: null
+MAIL_MAX_EMAILS: null
+MAIL_PASSWORD: null  # set if OTS_ENABLE_EMAIL is turned on
+MAIL_PORT: 587
+MAIL_SERVER: smtp.gmail.com
+MAIL_SUPPRESS_SEND: false
+MAIL_USERNAME: null  # set if OTS_ENABLE_EMAIL is turned on
+MAIL_USE_SSL: false
+MAIL_USE_TLS: true
+OTS_ADSB_API_KEY: null
+OTS_ADSB_API_URL: https://api.airplanes.live/v2/point/
+OTS_ADSB_GROUP: ADS-B
+OTS_ADSB_LAT: 40.744213
+OTS_ADSB_LON: -73.986939
+OTS_ADSB_RADIUS: 10
+OTS_AISHUB_EAST_LON: null
+OTS_AISHUB_IMO_LIST: ''
+OTS_AISHUB_MMSI_LIST: ''
+OTS_AISHUB_NORTH_LAT: null
+OTS_AISHUB_SOUTH_LAT: null
+OTS_AISHUB_USERNAME: null
+OTS_AISHUB_WEST_LON: null
+OTS_AIS_GROUP: AIS
+OTS_BACKUP_COUNT: 7
+OTS_CA_CITY: YY
+OTS_CA_COUNTRY: WW
+OTS_CA_EXPIRATION_TIME: 3650
+OTS_CA_FOLDER: /home/tak/ots/ca
+OTS_CA_NAME: Raven-CA
+OTS_CA_ORGANIZATION: ZZ
+OTS_CA_ORGANIZATIONAL_UNIT: Raven
+OTS_CA_PASSWORD: CHANGE_ME_CA_PASSWORD
+OTS_CA_STATE: XX
+OTS_CA_SUBJECT: /C=WW/ST=XX/L=YY/O=ZZ/OU=Raven
+OTS_COT_PARSER_PROCESSES: 1
+OTS_DATA_FOLDER: /home/tak/ots
+OTS_DELETE_OLD_DATA_DAYS: 0
+OTS_DELETE_OLD_DATA_HOURS: 0
+OTS_DELETE_OLD_DATA_MINUTES: 0
+OTS_DELETE_OLD_DATA_SECONDS: 0
+OTS_DELETE_OLD_DATA_WEEKS: 1
+OTS_EMAIL_DOMAIN_BLACKLIST: []
+OTS_EMAIL_DOMAIN_WHITELIST: []
+OTS_EMAIL_TLD_BLACKLIST: []
+OTS_EMAIL_TLD_WHITELIST: []
+OTS_ENABLE_CHANNELS: true
+OTS_ENABLE_EMAIL: false
+OTS_ENABLE_LDAP: false
+OTS_ENABLE_MESHTASTIC: false
+OTS_ENABLE_MUMBLE_AUTHENTICATION: false
+OTS_ENABLE_PLUGINS: true
+OTS_ENABLE_TCP_STREAMING_PORT: true
+OTS_IP_WHITELIST:
+- 127.0.0.1
+OTS_LDAP_ADMIN_GROUP: ots_admin
+OTS_LDAP_CALLSIGN_ATTRIBUTE: callsignAttribute
+OTS_LDAP_COLOR_ATTRIBUTE: colorAttribute
+OTS_LDAP_GROUP_PREFIX: ots_
+OTS_LDAP_PREFERENCE_ATTRIBUTE_PREFIX: ots_
+OTS_LDAP_ROLE_ATTRIBUTE: roleAttribute
+OTS_LISTENER_ADDRESS: 127.0.0.1
+OTS_LISTENER_PORT: 8081
+OTS_LOG_ROTATE_INTERVAL: 0
+OTS_LOG_ROTATE_WHEN: midnight
+OTS_MARTI_HTTPS_PORT: 8443
+OTS_MARTI_HTTP_PORT: 8080
+OTS_MEDIAMTX_API_ADDRESS: http://localhost:9997
+OTS_MEDIAMTX_ENABLE: true
+OTS_MEDIAMTX_TOKEN: CHANGE_ME_OR_LET_THE_APP_GENERATE_ONE_ON_FIRST_RUN
+OTS_MESHTASTIC_DOWNLINK_CHANNELS: []
+OTS_MESHTASTIC_GROUP: Meshtastic
+OTS_MESHTASTIC_NODEINFO_INTERVAL: 3
+OTS_MESHTASTIC_PUBLISH_INTERVAL: 30
+OTS_MESHTASTIC_TOPIC: opentakserver
+OTS_NODE_ID: CHANGE_ME_GENERATE_A_UNIQUE_NODE_ID
+OTS_PLUGIN_PREFIXES:
+- ots-
+- ots_
+OTS_PLUGIN_REPO: https://repo.opentakserver.io/brian/prod/
+OTS_PROFILE_MAP_SOURCES: true
+OTS_RABBITMQ_PASSWORD: CHANGE_ME_RABBITMQ_PASSWORD
+OTS_RABBITMQ_PREFETCH: 2
+OTS_RABBITMQ_SERVER_ADDRESS: 127.0.0.1
+OTS_RABBITMQ_TTL: '86400000'
+OTS_RABBITMQ_USERNAME: CHANGE_ME_RABBITMQ_USERNAME
+OTS_SSL_CERT_HEADER: X-Ssl-Cert
+OTS_SSL_STREAMING_PORT: 8089
+OTS_SSL_VERIFICATION_MODE: 2
+OTS_STREAMING_INTERFACE: 0.0.0.0
+OTS_TAK_GOV_ACCESS_TOKEN: ''
+OTS_TAK_GOV_LINKED: false
+OTS_TAK_GOV_REFRESH_TOKEN: ''
+OTS_TCP_STREAMING_PORT: 8088
+OTS_UDP_PORT: 8087
+REMEMBER_COOKIE_SAMESITE: strict
+SCHEDULER_API_ENABLED: false
+SECRET_KEY: CHANGE_ME_GENERATE_A_LONG_RANDOM_SECRET  # e.g. python3 -c "import secrets; print(secrets.token_hex(32))"
+SECURITY_CHANGEABLE: true
+SECURITY_CHANGE_URL: /password/change
+SECURITY_CONFIRMABLE: false
+SECURITY_CSRF_COOKIE_NAME: XSRF-TOKEN
+SECURITY_CSRF_IGNORE_UNAUTH_ENDPOINTS: true
+SECURITY_CSRF_PROTECT_MECHANISMS:
+- session
+- basic
+SECURITY_LOGIN_WITHOUT_CONFIRMATION: true
+SECURITY_MSG_USERNAME_DISALLOWED_CHARACTERS:
+- Username can contain only letters, numbers, underscores, and periods
+- error
+SECURITY_PASSWORD_CONFIRM_REQUIRED: false
+SECURITY_PASSWORD_LENGTH_MIN: 8
+SECURITY_PASSWORD_SALT: CHANGE_ME_GENERATE_A_LONG_RANDOM_SALT  # e.g. python3 -c "import secrets; print(secrets.randbits(128))"
+SECURITY_POST_CONFIRM_VIEW: /login
+SECURITY_RECOVERABLE: false
+SECURITY_REDIRECT_BEHAVIOR: spa
+SECURITY_REGISTERABLE: false
+SECURITY_RESET_URL: /password/reset
+SECURITY_RESET_VIEW: /reset
+SECURITY_RETURN_GENERIC_RESPONSES: true
+# Two-factor is mandatory for every account (SECURITY_TWO_FACTOR_REQUIRED),
+# and the issuer name below is what shows up in authenticator apps.
+SECURITY_TOTP_ISSUER: Raven
+SECURITY_TOTP_SECRETS:
+  1: CHANGE_ME_GENERATE_A_RANDOM_BASE32_SECRET  # e.g. python3 -c "import pyotp; print(pyotp.random_base32())"
+SECURITY_TRACKABLE: true
+SECURITY_TWO_FACTOR: true
+SECURITY_TWO_FACTOR_ALWAYS_VALIDATE: false
+SECURITY_TWO_FACTOR_REQUIRED: true
+SECURITY_TWO_FACTOR_ENABLED_METHODS:
+- authenticator
+- email
+SECURITY_TWO_FACTOR_RESCUE_MAIL: null
+SECURITY_URL_PREFIX: /api
+SECURITY_USERNAME_ENABLE: true
+SECURITY_USERNAME_MIN_LENGTH: 1
+SECURITY_USERNAME_REQUIRED: true
+SESSION_COOKIE_SAMESITE: strict
+SQLALCHEMY_DATABASE_URI: postgresql+psycopg://CHANGE_ME_DB_USER:CHANGE_ME_DB_PASSWORD@127.0.0.1/CHANGE_ME_DB_NAME
+SQLALCHEMY_ECHO: false
+SQLALCHEMY_ENGINE_OPTIONS:
+  pool_pre_ping: true
+SQLALCHEMY_RECORD_QUERIES: false
+SQLALCHEMY_TRACK_MODIFICATIONS: false
+UPLOAD_FOLDER: /home/tak/ots/uploads
+WTF_CSRF_CHECK_DEFAULT: false
+WTF_CSRF_TIME_LIMIT: null
