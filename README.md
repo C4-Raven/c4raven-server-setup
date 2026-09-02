@@ -30,6 +30,9 @@ Cloudflare dashboard's Turnstile section) and whether to configure a public
 domain (gets you a real Let's Encrypt certificate instead of a self-signed
 one). Run as a normal user, not root — it uses `sudo` itself where needed.
 
+At the end it creates the first administrator account (see
+[`seed_admin.py`](#files) below) and prints the URL to log in at.
+
 ### Federation Hub
 
 TAK Federation Hub isn't something this script can download for you — the
