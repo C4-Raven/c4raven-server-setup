@@ -33,8 +33,10 @@ git pull --ff-only origin master
 # shellcheck source=/dev/null
 source ~/.opentakserver_venv/bin/activate
 pip3 install -e ~/src/c4raven-server
-flask db upgrade
 echo "${GREEN}Backend updated.${NC}"
+# Migrations run automatically inside the app on every startup (see
+# init_extensions() in raven/app.py), applied when services restart below --
+# no separate `flask db upgrade` step here.
 
 if [ -d ~/src/c4raven-ui ]; then
   echo "${GREEN}Updating the C4 Raven UI frontend...${NC}"
@@ -43,7 +45,11 @@ if [ -d ~/src/c4raven-ui ]; then
   git pull --ff-only origin master
   npm install
   npm run build
-  rsync -a --delete dist/ /var/www/html/opentakserver/
+  # The webroot directory itself is root-owned but world-writable, so we can
+  # write files into it but can't touch the directory entry's own
+  # owner/group/permissions/mtime -- rsync -a tries to by default and exits
+  # non-zero on that even though every file transfers fine, so skip it.
+  rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete dist/ /var/www/html/opentakserver/
   echo "${GREEN}Frontend updated and deployed.${NC}"
 else
   echo "${YELLOW}No ~/src/c4raven-ui checkout found -- skipping frontend update.${NC}"

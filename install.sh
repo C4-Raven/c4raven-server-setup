@@ -73,6 +73,11 @@ source ~/.opentakserver_venv/bin/activate
 python3 -m pip install --upgrade pip setuptools wheel
 pip3 install -e ~/src/c4raven-server
 
+# There's no top-level app.py/wsgi.py for Flask's CLI to auto-discover (the
+# editable install's real entry point is raven/app.py), so every `flask`
+# invocation below needs FLASK_APP set explicitly.
+export FLASK_APP=raven.app
+
 cd ~/src/c4raven-server
 flask raven generate-config
 echo "${GREEN}Raven backend installed.${NC}"
@@ -117,10 +122,10 @@ if [ "$OTS_DB_EXISTS" != 1 ]; then
 fi
 sudo su postgres -c "psql -c 'GRANT ALL PRIVILEGES ON DATABASE \"ots\" TO ots;'"
 sudo su postgres -c "psql -d ots -c 'GRANT ALL ON SCHEMA public TO ots;'"
-
-cd ~/src/c4raven-server
-flask db upgrade
 echo "${GREEN}Database ready.${NC}"
+# Migrations run automatically inside the app itself on every startup
+# (see init_extensions() in raven/app.py) -- no separate `flask db upgrade`
+# step needed or wanted here.
 
 # ---------------------------------------------------------------------------
 # Cloudflare Turnstile (bot protection on login)
@@ -256,7 +261,12 @@ fi
 cd ~/src/c4raven-ui
 npm install
 npm run build
-rsync -a --delete dist/ /var/www/html/opentakserver/
+# The webroot directory itself is root-owned but world-writable (see chmod
+# a+rw above), so we can write files into it but can't touch the directory
+# entry's own owner/group/permissions/mtime -- rsync -a tries to by default
+# and exits non-zero on that even though every file transfers fine, so tell
+# it not to bother.
+rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete dist/ /var/www/html/opentakserver/
 
 # ---------------------------------------------------------------------------
 # systemd units for the Raven services
