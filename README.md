@@ -42,13 +42,20 @@ by hand either way.
 
 ## Update
 
+One command, run as the normal user Raven runs as (not root):
+
 ```
 curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/update.sh | bash
 ```
 
-Pulls the latest backend and frontend, applies any new database
-migrations, rebuilds the UI, and restarts every service. Never touches
-your `config.yml` or data — safe to run any time.
+Pulls the latest `c4raven-server` and `c4raven-ui`, reinstalls the backend
+(`pip install -e`), rebuilds the frontend with `yarn` and deploys it to the
+webroot, then prompts for `sudo` to restart the services (`opentakserver`,
+`cot_parser`, `eud_handler`, `eud_handler_ssl`, `mediamtx`, and
+`federation-hub` if it's running). Database migrations happen
+automatically when `opentakserver` restarts — there's no separate
+migration step to run. Never touches your `config.yml` or data — safe to
+run any time.
 
 ## Files
 
