@@ -24,13 +24,13 @@ Usage (from the server, with the app's virtualenv active):
 
 import sys
 
-from opentakserver.app import create_app
+from raven.app import create_app
 
 app = create_app(cli=True)
 
-from opentakserver.extensions import db
-from opentakserver.models.role import Role
-from opentakserver.models.user import User
+from raven.extensions import db
+from raven.models.role import Role
+from raven.models.user import User
 from flask_security import SQLAlchemyUserDatastore, hash_password
 
 ADMIN_USERNAME = "admin"
