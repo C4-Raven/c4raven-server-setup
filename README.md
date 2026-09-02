@@ -51,6 +51,20 @@ One command, run as the normal user Raven runs as (not root):
 curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/update.sh | bash
 ```
 
+Piping straight into `bash` like this doesn't give `sudo` a terminal to
+prompt you on, so the restart at the end will fail with an authentication
+error even though everything up to that point succeeded. Finish it
+yourself:
+
+```
+sudo systemctl restart opentakserver cot_parser eud_handler eud_handler_ssl mediamtx
+sudo systemctl restart federation-hub   # only if you have Federation Hub installed
+```
+
+(If you'd rather avoid this entirely, download the script and run it
+directly instead of piping it — `curl -fsSLO .../update.sh && bash
+update.sh` — sudo can prompt normally that way.)
+
 Pulls the latest `c4raven-server` and `c4raven-ui`, reinstalls the backend
 (`pip install -e`), rebuilds the frontend with `yarn` and deploys it to the
 webroot, then prompts for `sudo` to restart the services (`opentakserver`,
