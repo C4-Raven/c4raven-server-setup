@@ -87,5 +87,23 @@ run any time.
 
   Refuses to run if any user already exists, so it's safe to keep around
   without risk of it being run against a live, populated database. Can
-  also be run by hand: `python3 seed_admin.py` (with the venv active, from
-  inside `~/src/c4raven-server`).
+  also be run by hand as the `raven` user:
+  `cd /opt/raven/c4raven-server && FLASK_APP=raven.app RAVEN_DATA_FOLDER=/opt/raven/data poetry run python /opt/raven/seed_admin.py`.
+
+## Layout
+
+Everything runs under a dedicated, non-login `raven` system account (not
+whoever ran `install.sh`) at `/opt/raven`:
+
+- `/opt/raven/c4raven-server`, `/opt/raven/c4raven-ui` — the two repos.
+  The backend's dependencies come from Poetry (`poetry.lock`), with its
+  virtualenv kept in-project at `c4raven-server/.venv`.
+- `/opt/raven/data` — `config.yml`, the certificate authority, mediamtx
+  recordings, logs, uploads. Equivalent to `RAVEN_DATA_FOLDER`.
+- `/opt/raven/.raven-secrets.env` — a locked-down (600) file read via
+  systemd's `EnvironmentFile=`, supplying `RAVEN_DATA_FOLDER` (so the app
+  can find `config.yml` in the first place) plus the database/RabbitMQ
+  credentials.
+- PostgreSQL role and database are both named `raven`.
+- nginx configs and the webroot are named to match:
+  `/etc/nginx/sites-available/raven_*`, `/var/www/html/raven`.
