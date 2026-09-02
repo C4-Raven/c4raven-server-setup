@@ -43,8 +43,12 @@ if [ -d ~/src/c4raven-ui ]; then
   cd ~/src/c4raven-ui
   git fetch origin
   git pull --ff-only origin master
-  npm install
-  npm run build
+  # This repo pins yarn 4 (see packageManager in package.json) -- npm doesn't
+  # understand its lockfile and will silently downgrade/corrupt it if used
+  # here instead. `corepack yarn` runs the pinned version directly without
+  # needing `corepack enable` (which needs root to symlink into /usr/bin).
+  corepack yarn install
+  corepack yarn build
   # The webroot directory itself is root-owned but world-writable, so we can
   # write files into it but can't touch the directory entry's own
   # owner/group/permissions/mtime -- rsync -a tries to by default and exits

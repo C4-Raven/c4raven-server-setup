@@ -259,8 +259,12 @@ if [ ! -d ~/src/c4raven-ui ]; then
   git clone https://github.com/C4-Raven/c4raven-ui.git ~/src/c4raven-ui
 fi
 cd ~/src/c4raven-ui
-npm install
-npm run build
+# This repo pins yarn 4 (see packageManager in package.json) -- npm doesn't
+# understand its lockfile and will silently downgrade/corrupt it if used
+# here instead. `corepack yarn` runs the pinned version directly without
+# needing `corepack enable` (which needs root to symlink into /usr/bin).
+corepack yarn install
+corepack yarn build
 # The webroot directory itself is root-owned but world-writable (see chmod
 # a+rw above), so we can write files into it but can't touch the directory
 # entry's own owner/group/permissions/mtime -- rsync -a tries to by default
