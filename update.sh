@@ -3,60 +3,74 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/update.sh | bash
 #
-# Pulls the latest backend + frontend, applies any new database migrations,
-# rebuilds the UI, and restarts every Raven service. Safe to run any time --
-# it only pulls and reapplies, it never touches your config.yml or data.
+# Pulls the latest backend + frontend, rebuilds the UI, and restarts every
+# Raven service. Safe to run any time -- it only pulls and reapplies, it
+# never touches config.yml, .raven-secrets.env, or data.
 set -euo pipefail
 
-REPO_RAW=https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master
+APP_USER="raven"
+APP_HOME="/opt/raven"
+WEBROOT="/var/www/html/raven"
+
 TMP=/tmp/raven_updater
 mkdir -p "$TMP"
+REPO_RAW=https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master
 curl -fsSL "$REPO_RAW/colors.sh" -o "$TMP/colors.sh"
 # shellcheck source=/dev/null
 . "$TMP/colors.sh"
 
-if [ "$(whoami)" == "root" ]; then
-  echo "${RED}Don't run this as root -- run it as the user Raven runs as.${NC}"
+if [ "$(whoami)" == "root" ] || [ "$(whoami)" == "$APP_USER" ]; then
+  echo "${RED}Run this as your own sudo-capable user, not root or '$APP_USER'.${NC}"
   exit 1
 fi
 
-if [ ! -d ~/src/c4raven-server ] || [ ! -d ~/.opentakserver_venv ]; then
-  echo "${RED}No existing install found at ~/src/c4raven-server. Run install.sh first.${NC}"
+if ! sudo test -d "$APP_HOME/c4raven-server"; then
+  echo "${RED}No existing install found at $APP_HOME/c4raven-server. Run install.sh first.${NC}"
   exit 1
 fi
+
+run_as_app() {
+  sudo -u "$APP_USER" -H bash -lc "$1"
+}
 
 echo "${GREEN}Updating the Raven backend...${NC}"
-cd ~/src/c4raven-server
-git fetch origin
-git pull --ff-only origin master
-
-# shellcheck source=/dev/null
-source ~/.opentakserver_venv/bin/activate
-pip3 install -e ~/src/c4raven-server
+# raven/__init__.py is an auto-generated version stamp that `poetry install`
+# rewrites on every run -- discard that one file's local drift before
+# pulling (confirmed live: a dirty _versions.ts blocks the frontend pull
+# below the exact same way) rather than let it silently block future pulls.
+run_as_app "cd '$APP_HOME/c4raven-server' && git checkout -- raven/__init__.py 2>/dev/null; git fetch origin && git pull --ff-only origin master"
+run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
 echo "${GREEN}Backend updated.${NC}"
 # Migrations run automatically inside the app on every startup (see
 # init_extensions() in raven/app.py), applied when services restart below --
 # no separate `flask db upgrade` step here.
 
-if [ -d ~/src/c4raven-ui ]; then
+if sudo test -d "$APP_HOME/c4raven-ui"; then
   echo "${GREEN}Updating the C4 Raven UI frontend...${NC}"
-  cd ~/src/c4raven-ui
-  git fetch origin
-  git pull --ff-only origin master
-  # This repo pins yarn 4 (see packageManager in package.json) -- npm doesn't
+  # src/_versions.ts is an auto-generated build stamp that `yarn build`
+  # rewrites every time -- confirmed live: without discarding it first, the
+  # very next pull fails outright ("local changes would be overwritten").
+  run_as_app "cd '$APP_HOME/c4raven-ui' && git checkout -- src/_versions.ts 2>/dev/null; git fetch origin && git pull --ff-only origin master"
+  # c4raven-ui pins yarn 4 (packageManager in package.json) -- npm doesn't
   # understand its lockfile and will silently downgrade/corrupt it if used
   # here instead. `corepack yarn` runs the pinned version directly without
   # needing `corepack enable` (which needs root to symlink into /usr/bin).
-  corepack yarn install
-  corepack yarn build
-  # The webroot directory itself is root-owned but world-writable, so we can
-  # write files into it but can't touch the directory entry's own
-  # owner/group/permissions/mtime -- rsync -a tries to by default and exits
-  # non-zero on that even though every file transfers fine, so skip it.
-  rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete dist/ /var/www/html/opentakserver/
+  run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn install"
+  run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
+  # Deploy as root, not as $APP_USER: whatever previously owned files are in
+  # the webroot might not be deletable by $APP_USER even though the
+  # directory itself is world-writable -- confirmed live against a server
+  # whose webroot had www-data-owned files, where `--delete` failed outright
+  # with Permission denied under the app user. Root can always write/delete
+  # regardless of prior ownership. --no-perms/--no-owner/--no-group/
+  # --omit-dir-times: skip metadata rsync -a would otherwise try to set on
+  # the destination directory entry itself, which fails even as root once
+  # anything has left it non-writable by its own uid/gid.
+  sudo rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete "$APP_HOME/c4raven-ui/dist/" "$WEBROOT/"
+  sudo chown -R "$APP_USER:$APP_USER" "$WEBROOT"
   echo "${GREEN}Frontend updated and deployed.${NC}"
 else
-  echo "${YELLOW}No ~/src/c4raven-ui checkout found -- skipping frontend update.${NC}"
+  echo "${YELLOW}No $APP_HOME/c4raven-ui checkout found -- skipping frontend update.${NC}"
 fi
 
 echo "${GREEN}Restarting services...${NC}"
@@ -66,7 +80,6 @@ if systemctl is-active --quiet federation-hub 2>/dev/null; then
   sudo systemctl restart federation-hub
 fi
 
-deactivate
 rm -rf "$TMP"
 
 echo "${GREEN}Update complete.${NC}"

@@ -3,13 +3,25 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/install.sh | bash
 #
-# Installs the full stack in one pass: system packages, PostgreSQL, RabbitMQ,
-# the Raven backend + C4 Raven UI frontend, nginx, mediamtx, systemd units,
-# and (optionally) Cloudflare Turnstile bot protection, a public domain with
-# a real Let's Encrypt certificate, and TAK Federation Hub.
+# Installs the full stack in one pass, under a dedicated `raven` system
+# account rather than whatever user runs this script: system packages,
+# PostgreSQL, RabbitMQ, the Raven backend + C4 Raven UI frontend (via
+# Poetry and Yarn, matching what each repo actually pins), nginx, mediamtx,
+# and systemd units. Also offers Cloudflare Turnstile bot protection, a
+# public domain with a real Let's Encrypt certificate, and TAK Federation
+# Hub.
+#
+# Run as your own sudo-capable user, NOT as root and NOT as `raven` itself
+# -- this script creates and uses that account via `sudo -u raven`.
 #
 # Safe to re-run: every step checks for existing state before creating it.
 set -euo pipefail
+
+APP_USER="raven"
+APP_HOME="/opt/raven"
+DATA_DIR="$APP_HOME/data"
+DB_NAME="raven"
+WEBROOT="/var/www/html/raven"
 
 INSTALLER_DIR=/tmp/raven_installer
 mkdir -p "$INSTALLER_DIR"
@@ -27,7 +39,11 @@ if [ "$NAME" != "Ubuntu" ]; then
 fi
 
 if [ "$(whoami)" == "root" ]; then
-  echo "${RED}Don't run this as root -- run it as the user Raven should run as.${NC}"
+  echo "${RED}Don't run this as root -- run it as your own sudo-capable user. It creates and uses a dedicated '$APP_USER' account itself.${NC}"
+  exit 1
+fi
+if [ "$(whoami)" == "$APP_USER" ]; then
+  echo "${RED}Don't run this as '$APP_USER' directly -- run it as your own sudo-capable user instead.${NC}"
   exit 1
 fi
 
@@ -44,7 +60,11 @@ ask_yn() {
   done
 }
 
-mkdir -p ~/ots
+# Runs a command as the dedicated app user, through a login shell so
+# ~/.profile puts ~/.local/bin (poetry, yarn via corepack) on PATH.
+run_as_app() {
+  sudo -u "$APP_USER" -H bash -lc "$1"
+}
 
 echo "${GREEN}Installing system packages via apt. You may be prompted for your sudo password...${NC}"
 sudo apt update && sudo NEEDRESTART_MODE=a apt upgrade -y
@@ -56,72 +76,71 @@ sudo NEEDRESTART_MODE=a apt install -y \
   nginx libnginx-mod-stream \
   certbot python3-certbot-nginx \
   ffmpeg \
-  nodejs npm
+  nodejs
+
+echo "${GREEN}Setting up the dedicated '$APP_USER' account...${NC}"
+if ! id "$APP_USER" &>/dev/null; then
+  sudo useradd --system --create-home --home-dir "$APP_HOME" --shell /bin/bash "$APP_USER"
+  sudo chmod 750 "$APP_HOME"
+fi
+run_as_app "mkdir -p '$DATA_DIR/logs'"
 
 # ---------------------------------------------------------------------------
-# Backend: clone + install
+# Backend: clone + install (Poetry, in-project .venv -- this repo pins its
+# dependency versions in poetry.lock, so `pip install -e` (which ignores
+# the lockfile) is not equivalent)
 # ---------------------------------------------------------------------------
 echo "${GREEN}Cloning and installing the Raven backend...${NC}"
-if [ ! -d ~/src/c4raven-server ]; then
-  mkdir -p ~/src
-  git clone https://github.com/C4-Raven/c4raven-server.git ~/src/c4raven-server
+if ! sudo test -d "$APP_HOME/c4raven-server"; then
+  run_as_app "git clone https://github.com/C4-Raven/c4raven-server.git '$APP_HOME/c4raven-server'"
 fi
 
-python3 -m venv --system-site-packages ~/.opentakserver_venv
-# shellcheck source=/dev/null
-source ~/.opentakserver_venv/bin/activate
-python3 -m pip install --upgrade pip setuptools wheel
-pip3 install -e ~/src/c4raven-server
+if ! sudo test -x "$APP_HOME/.local/bin/poetry"; then
+  run_as_app "curl -sSL https://install.python-poetry.org | python3 -"
+fi
+run_as_app "poetry config virtualenvs.in-project true"
+run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
 
-# There's no top-level app.py/wsgi.py for Flask's CLI to auto-discover (the
-# editable install's real entry point is raven/app.py), so every `flask`
-# invocation below needs FLASK_APP set explicitly.
-export FLASK_APP=raven.app
+# There's no top-level app.py/wsgi.py for Flask's CLI to auto-discover, and
+# RAVEN_DATA_FOLDER has to be set for every ad-hoc `flask raven ...` call
+# below (the app itself gets it from EnvironmentFile at runtime, but that
+# file doesn't exist yet the first time we run these).
+FLASK_ENV="FLASK_APP=raven.app RAVEN_DATA_FOLDER='$DATA_DIR'"
 
-cd ~/src/c4raven-server
-flask raven generate-config
+run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven generate-config"
 echo "${GREEN}Raven backend installed.${NC}"
 
 # ---------------------------------------------------------------------------
 # PostgreSQL
 # ---------------------------------------------------------------------------
 echo "${GREEN}Setting up PostgreSQL...${NC}"
-sudo su postgres -c "psql -d ots -c 'CREATE EXTENSION IF NOT EXISTS postgis'" 2>/dev/null || true
+sudo su postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS postgis'" 2>/dev/null || true
 
-OTS_USER_EXISTS=$(sudo su postgres -c "psql -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='ots'\"")
-if [ "$OTS_USER_EXISTS" != 1 ]; then
+DB_USER_EXISTS=$(sudo su postgres -c "psql -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_NAME'\"")
+if [ "$DB_USER_EXISTS" != 1 ]; then
   POSTGRESQL_PASSWORD=$(tr -dc 'A-Za-z0-9!?%=' < /dev/urandom | head -c 20)
-  sudo su postgres -c "psql -c \"create role ots with login password '${POSTGRESQL_PASSWORD}';\""
-  python3 - "$POSTGRESQL_PASSWORD" << 'PYEOF'
-import sys, yaml
-password = sys.argv[1]
-path = "/home/%s/ots/config.yml" % __import__("os").environ["USER"]
-with open(path) as f:
-    conf = yaml.safe_load(f)
-conf["SQLALCHEMY_DATABASE_URI"] = f"postgresql+psycopg://ots:{password}@127.0.0.1/ots"
-with open(path, "w") as f:
-    yaml.safe_dump(conf, f)
-PYEOF
+  sudo su postgres -c "psql -c \"create role $DB_NAME with login password '${POSTGRESQL_PASSWORD}';\""
 else
-  read -rp "${GREEN}PostgreSQL user 'ots' already exists -- enter its password: ${NC}" POSTGRESQL_PASSWORD < /dev/tty
-  python3 - "$POSTGRESQL_PASSWORD" << 'PYEOF'
-import sys, yaml, os
-password = sys.argv[1]
-path = os.path.expanduser("~/ots/config.yml")
+  read -rp "${GREEN}PostgreSQL user '$DB_NAME' already exists -- enter its password: ${NC}" POSTGRESQL_PASSWORD < /dev/tty
+fi
+DB_URI="postgresql+psycopg://$DB_NAME:${POSTGRESQL_PASSWORD}@127.0.0.1/$DB_NAME"
+run_as_app "python3 - '$DB_URI' << 'PYEOF'
+import sys, yaml
+uri = sys.argv[1]
+path = '$DATA_DIR/config.yml'
 with open(path) as f:
     conf = yaml.safe_load(f)
-conf["SQLALCHEMY_DATABASE_URI"] = f"postgresql+psycopg://ots:{password}@127.0.0.1/ots"
-with open(path, "w") as f:
+conf['SQLALCHEMY_DATABASE_URI'] = uri
+with open(path, 'w') as f:
     yaml.safe_dump(conf, f)
-PYEOF
-fi
+PYEOF"
 
-OTS_DB_EXISTS=$(sudo su postgres -c "psql -XtAc \"SELECT 1 FROM pg_database WHERE datname='ots'\"")
-if [ "$OTS_DB_EXISTS" != 1 ]; then
-  sudo su postgres -c "psql -c 'create database ots;'"
+DB_EXISTS=$(sudo su postgres -c "psql -XtAc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\"")
+if [ "$DB_EXISTS" != 1 ]; then
+  sudo su postgres -c "psql -c 'create database $DB_NAME;'"
 fi
-sudo su postgres -c "psql -c 'GRANT ALL PRIVILEGES ON DATABASE \"ots\" TO ots;'"
-sudo su postgres -c "psql -d ots -c 'GRANT ALL ON SCHEMA public TO ots;'"
+sudo su postgres -c "psql -c 'GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAME\" TO $DB_NAME;'"
+sudo su postgres -c "psql -d $DB_NAME -c 'GRANT ALL ON SCHEMA public TO $DB_NAME;'"
 echo "${GREEN}Database ready.${NC}"
 # Migrations run automatically inside the app itself on every startup
 # (see init_extensions() in raven/app.py) -- no separate `flask db upgrade`
@@ -134,18 +153,18 @@ if ask_yn "Enable Cloudflare Turnstile (the human-verification checkbox) on the 
   echo "Get a site key + secret key from the Cloudflare dashboard -> Turnstile first, if you haven't already."
   read -rp "${GREEN}Turnstile site key: ${NC}" TURNSTILE_SITE_KEY < /dev/tty
   read -rp "${GREEN}Turnstile secret key: ${NC}" TURNSTILE_SECRET_KEY < /dev/tty
-  python3 - "$TURNSTILE_SITE_KEY" "$TURNSTILE_SECRET_KEY" << 'PYEOF'
-import sys, yaml, os
+  run_as_app "python3 - '$TURNSTILE_SITE_KEY' '$TURNSTILE_SECRET_KEY' << 'PYEOF'
+import sys, yaml
 site_key, secret_key = sys.argv[1], sys.argv[2]
-path = os.path.expanduser("~/ots/config.yml")
+path = '$DATA_DIR/config.yml'
 with open(path) as f:
     conf = yaml.safe_load(f)
-conf["RAVEN_TURNSTILE_ENABLE"] = True
-conf["RAVEN_TURNSTILE_SITE_KEY"] = site_key
-conf["RAVEN_TURNSTILE_SECRET_KEY"] = secret_key
-with open(path, "w") as f:
+conf['RAVEN_TURNSTILE_ENABLE'] = True
+conf['RAVEN_TURNSTILE_SITE_KEY'] = site_key
+conf['RAVEN_TURNSTILE_SECRET_KEY'] = secret_key
+with open(path, 'w') as f:
     yaml.safe_dump(conf, f)
-PYEOF
+PYEOF"
   echo "${GREEN}Turnstile configured.${NC}"
 fi
 
@@ -163,42 +182,39 @@ fi
 # Certificate authority
 # ---------------------------------------------------------------------------
 echo "${GREEN}Creating the certificate authority...${NC}"
-mkdir -p ~/ots/ca
-cd ~/src/c4raven-server
-flask raven create-ca
-flask raven issue-server-certificate
+run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven create-ca"
+run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven issue-server-certificate"
 
 # ---------------------------------------------------------------------------
 # mediamtx
 # ---------------------------------------------------------------------------
 echo "${GREEN}Installing mediamtx...${NC}"
-mkdir -p ~/ots/mediamtx/recordings
-cd ~/ots/mediamtx
-if [ ! -f ./mediamtx ]; then
-  pip3 install --quiet lastversion
+run_as_app "mkdir -p '$DATA_DIR/mediamtx/recordings'"
+if ! sudo test -f "$DATA_DIR/mediamtx/mediamtx"; then
+  run_as_app "$APP_HOME/.local/bin/poetry run pip install --quiet lastversion 2>/dev/null || pip3 install --user --quiet lastversion"
   ARCH=$(uname -m)
   if [ "$ARCH" == "x86_64" ]; then
-    lastversion --filter '~*linux_amd64' --assets download bluenviron/mediamtx --only 1.13.0
+    run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_amd64' --assets download bluenviron/mediamtx --only 1.13.0"
   elif [ "$ARCH" == "aarch64" ]; then
-    lastversion --filter '~*linux_arm64' --assets download bluenviron/mediamtx --only 1.13.0
+    run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_arm64' --assets download bluenviron/mediamtx --only 1.13.0"
   else
-    lastversion --filter '~*linux_armv7' --assets download bluenviron/mediamtx --only 1.13.0
+    run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_armv7' --assets download bluenviron/mediamtx --only 1.13.0"
   fi
-  tar -xf ./*.tar.gz
+  run_as_app "cd '$DATA_DIR/mediamtx' && tar -xf ./*.tar.gz"
 fi
-curl -fsSL "$REPO_RAW/mediamtx.yml" -o ~/ots/mediamtx/mediamtx.yml
-sed -i \
-  -e "s~OTS_FOLDER~${HOME}/ots~g" \
-  -e "s~SERVER_CERT_FILE~${HOME}/ots/ca/certs/opentakserver/opentakserver.pem~g" \
-  -e "s~SERVER_KEY_FILE~${HOME}/ots/ca/certs/opentakserver/opentakserver.nopass.key~g" \
-  ~/ots/mediamtx/mediamtx.yml
+run_as_app "curl -fsSL '$REPO_RAW/mediamtx.yml' -o '$DATA_DIR/mediamtx/mediamtx.yml'"
+sudo sed -i \
+  -e "s~OTS_FOLDER~$DATA_DIR~g" \
+  -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.pem~g" \
+  -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.nopass.key~g" \
+  "$DATA_DIR/mediamtx/mediamtx.yml"
 
 sudo tee /etc/systemd/system/mediamtx.service >/dev/null << EOF
 [Unit]
 Wants=network.target
 [Service]
-User=$(whoami)
-ExecStart=${HOME}/ots/mediamtx/mediamtx ${HOME}/ots/mediamtx/mediamtx.yml
+User=$APP_USER
+ExecStart=$DATA_DIR/mediamtx/mediamtx $DATA_DIR/mediamtx/mediamtx.yml
 Restart=on-failure
 RestartSec=5s
 [Install]
@@ -219,28 +235,28 @@ fi
 sudo rm -f /etc/nginx/sites-enabled/*
 sudo mkdir -p /etc/nginx/streams-available /etc/nginx/streams-enabled
 
-for f in ots_http ots_https ots_certificate_enrollment; do
+for f in raven_http raven_https raven_certificate_enrollment; do
   sudo curl -fsSL "$REPO_RAW/nginx_configs/$f" -o "/etc/nginx/sites-available/$f"
 done
 for f in rabbitmq mediamtx; do
   sudo curl -fsSL "$REPO_RAW/nginx_configs/$f" -o "/etc/nginx/streams-available/$f"
 done
 
-for f in /etc/nginx/sites-available/ots_https /etc/nginx/sites-available/ots_certificate_enrollment \
+for f in /etc/nginx/sites-available/raven_https /etc/nginx/sites-available/raven_certificate_enrollment \
          /etc/nginx/streams-available/rabbitmq /etc/nginx/streams-available/mediamtx; do
   sudo sed -i \
-    -e "s~SERVER_CERT_FILE~${HOME}/ots/ca/certs/opentakserver/opentakserver.pem~g" \
-    -e "s~SERVER_KEY_FILE~${HOME}/ots/ca/certs/opentakserver/opentakserver.nopass.key~g" \
-    -e "s~CA_CERT_FILE~${HOME}/ots/ca/ca.pem~g" \
+    -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.pem~g" \
+    -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.nopass.key~g" \
+    -e "s~CA_CERT_FILE~$DATA_DIR/ca/ca.pem~g" \
     "$f"
 done
 
-sudo ln -sf /etc/nginx/sites-available/ots_* /etc/nginx/sites-enabled/
+sudo ln -sf /etc/nginx/sites-available/raven_* /etc/nginx/sites-enabled/
 sudo ln -sf /etc/nginx/streams-available/rabbitmq /etc/nginx/streams-enabled/
 sudo ln -sf /etc/nginx/streams-available/mediamtx /etc/nginx/streams-enabled/
 
-sudo mkdir -p /var/www/html/opentakserver
-sudo chmod a+rw /var/www/html/opentakserver
+sudo mkdir -p "$WEBROOT"
+sudo chmod a+rw "$WEBROOT"
 
 sudo systemctl enable nginx
 sudo systemctl restart nginx
@@ -255,42 +271,60 @@ fi
 # Frontend
 # ---------------------------------------------------------------------------
 echo "${GREEN}Building and deploying the C4 Raven UI frontend...${NC}"
-if [ ! -d ~/src/c4raven-ui ]; then
-  git clone https://github.com/C4-Raven/c4raven-ui.git ~/src/c4raven-ui
+if ! sudo test -d "$APP_HOME/c4raven-ui"; then
+  run_as_app "git clone https://github.com/C4-Raven/c4raven-ui.git '$APP_HOME/c4raven-ui'"
 fi
-cd ~/src/c4raven-ui
-# This repo pins yarn 4 (see packageManager in package.json) -- npm doesn't
-# understand its lockfile and will silently downgrade/corrupt it if used
-# here instead. `corepack yarn` runs the pinned version directly without
-# needing `corepack enable` (which needs root to symlink into /usr/bin).
-corepack yarn install
-corepack yarn build
-# The webroot directory itself is root-owned but world-writable (see chmod
-# a+rw above), so we can write files into it but can't touch the directory
-# entry's own owner/group/permissions/mtime -- rsync -a tries to by default
-# and exits non-zero on that even though every file transfers fine, so tell
-# it not to bother.
-rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete dist/ /var/www/html/opentakserver/
+# c4raven-ui pins yarn 4 (packageManager in package.json) -- npm doesn't
+# understand its lockfile and will silently downgrade/corrupt it. `corepack
+# yarn` runs the pinned version directly without needing `corepack enable`
+# (which needs root to symlink into /usr/bin).
+run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn install"
+run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
+# Deploy as root, not as $APP_USER: whatever previously owned files are in
+# the webroot (a from-scratch install won't have any, but a re-run or a
+# webroot that predates this script easily can, e.g. www-data from a
+# manually-deployed nginx default site) might not be deletable by
+# $APP_USER even though the directory itself is world-writable --
+# confirmed live against a server whose webroot had www-data-owned files,
+# where `--delete` failed outright with Permission denied under the app
+# user. Root can always write/delete here regardless of prior ownership.
+# --no-perms/--no-owner/--no-group/--omit-dir-times: skip metadata rsync -a
+# would otherwise try to set on the destination directory entry itself,
+# which fails even as root once anything (e.g. this same command, earlier)
+# has left it non-writable by its own uid/gid.
+sudo rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete "$APP_HOME/c4raven-ui/dist/" "$WEBROOT/"
+sudo chown -R "$APP_USER:$APP_USER" "$WEBROOT"
 
 # ---------------------------------------------------------------------------
-# systemd units for the Raven services
+# Secrets env file + systemd units for the Raven services
 # ---------------------------------------------------------------------------
 echo "${GREEN}Installing systemd services...${NC}"
-mkdir -p ~/ots/logs
+
+sudo tee "$APP_HOME/.raven-secrets.env" >/dev/null << EOF
+RAVEN_DATA_FOLDER=$DATA_DIR
+SQLALCHEMY_DATABASE_URI=$DB_URI
+RAVEN_RABBITMQ_USERNAME=guest
+RAVEN_RABBITMQ_PASSWORD=guest
+RAVEN_FEDHUB_ENABLE=False
+RAVEN_MEDIAMTX_ENABLE=True
+EOF
+sudo chown "$APP_USER:$APP_USER" "$APP_HOME/.raven-secrets.env"
+sudo chmod 600 "$APP_HOME/.raven-secrets.env"
 
 sudo tee /etc/systemd/system/opentakserver.service >/dev/null << EOF
 [Unit]
-Wants=network.target rabbitmq-server.service
-After=network.target rabbitmq-server.service
-Requires=eud_handler eud_handler_ssl cot_parser
+Wants=network.target rabbitmq-server.service postgresql.service
+After=network.target rabbitmq-server.service postgresql.service
+Requires=eud_handler.service eud_handler_ssl.service cot_parser.service
 [Service]
-User=$(whoami)
-WorkingDirectory=${HOME}/ots
-ExecStart=${HOME}/.opentakserver_venv/bin/raven
-Restart=on-failure
+User=$APP_USER
+WorkingDirectory=$APP_HOME/c4raven-server
+EnvironmentFile=$APP_HOME/.raven-secrets.env
+ExecStart=$APP_HOME/c4raven-server/.venv/bin/raven
+Restart=always
 RestartSec=5s
-StandardOutput=append:${HOME}/ots/logs/opentakserver.log
-StandardError=append:${HOME}/ots/logs/opentakserver.log
+StandardOutput=append:$DATA_DIR/logs/opentakserver.log
+StandardError=append:$DATA_DIR/logs/opentakserver.log
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -305,13 +339,14 @@ Wants=network.target rabbitmq-server.service
 After=network.target rabbitmq-server.service
 PartOf=opentakserver.service
 [Service]
-User=$(whoami)
-WorkingDirectory=${HOME}/ots
-ExecStart=${HOME}/.opentakserver_venv/bin/${BIN}${EXTRA_ARGS}
-Restart=on-failure
+User=$APP_USER
+WorkingDirectory=$APP_HOME/c4raven-server
+EnvironmentFile=$APP_HOME/.raven-secrets.env
+ExecStart=$APP_HOME/c4raven-server/.venv/bin/${BIN}${EXTRA_ARGS}
+Restart=always
 RestartSec=5s
-StandardOutput=append:${HOME}/ots/logs/opentakserver.log
-StandardError=append:${HOME}/ots/logs/opentakserver.log
+StandardOutput=append:$DATA_DIR/logs/opentakserver.log
+StandardError=append:$DATA_DIR/logs/opentakserver.log
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -336,7 +371,10 @@ sudo rabbitmq-plugins enable rabbitmq_mqtt rabbitmq_auth_backend_http || true
 sudo systemctl restart rabbitmq-server
 
 # ---------------------------------------------------------------------------
-# Federation Hub (optional -- requires a licensed TAK.gov account)
+# Federation Hub (optional -- requires a licensed TAK.gov account, and
+# still runs as its own `tak` system user, which its .deb creates itself --
+# it's a separate vendored component, not part of the raven-user layout
+# above)
 # ---------------------------------------------------------------------------
 echo
 echo "${YELLOW}Federation Hub requires a takserver-fed-hub_*.deb package, which is only${NC}"
@@ -356,11 +394,22 @@ if ask_yn "Do you already have a takserver-fed-hub_*.deb downloaded and ready to
     echo "${GREEN}Installing Federation Hub...${NC}"
     sudo apt install -y "$FEDHUB_DEB"
 
+    run_as_app "python3 - << 'PYEOF'
+import yaml
+path = '$DATA_DIR/config.yml'
+with open(path) as f:
+    conf = yaml.safe_load(f)
+conf['RAVEN_FEDHUB_ENABLE'] = True
+with open(path, 'w') as f:
+    yaml.safe_dump(conf, f)
+PYEOF"
+    sudo sed -i 's/^RAVEN_FEDHUB_ENABLE=.*/RAVEN_FEDHUB_ENABLE=True/' "$APP_HOME/.raven-secrets.env"
+
     echo "${GREEN}Federation Hub package installed.${NC}"
     echo "It still needs its TLS keystore, truststore, and federation policy set"
     echo "up before it will accept connections -- see /opt/tak/federation-hub/docs"
     echo "for the official setup guide. Once its cert covers your domain, set"
-    echo "RAVEN_FEDHUB_API_ADDRESS in ~/ots/config.yml to match."
+    echo "RAVEN_FEDHUB_API_ADDRESS in $DATA_DIR/config.yml to match."
   else
     echo "${RED}File not found at $FEDHUB_DEB -- skipping Federation Hub. Re-run this script, or install it manually, once you have the .deb.${NC}"
   fi
@@ -372,12 +421,11 @@ fi
 # First admin account
 # ---------------------------------------------------------------------------
 echo "${GREEN}Creating the first administrator account...${NC}"
-curl -fsSL "https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/seed_admin.py" -o "$INSTALLER_DIR/seed_admin.py"
-cd ~/src/c4raven-server
-python3 "$INSTALLER_DIR/seed_admin.py" || echo "${YELLOW}Skipped -- an admin account already exists.${NC}"
+run_as_app "curl -fsSL '$REPO_RAW/seed_admin.py' -o '$APP_HOME/seed_admin.py'"
+run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run python '$APP_HOME/seed_admin.py'" || \
+  echo "${YELLOW}Skipped -- an admin account already exists.${NC}"
 
 rm -rf "$INSTALLER_DIR"
-deactivate
 
 echo
 echo "${GREEN}Setup complete.${NC}"

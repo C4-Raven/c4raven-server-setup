@@ -1,6 +1,6 @@
 server {
 
-        root /var/www/html/opentakserver;
+        root /var/www/html/raven;
         index index.html index.htm index.nginx-debian.html;
         server_name opentakserver_443;
 
@@ -67,7 +67,7 @@ server {
 
 server {
 
-        root /var/www/html/opentakserver;
+        root /var/www/html/raven;
         index index.html index.htm index.nginx-debian.html;
         server_name opentakserver_8443;
 
