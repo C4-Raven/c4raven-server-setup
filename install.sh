@@ -205,8 +205,8 @@ fi
 run_as_app "curl -fsSL '$REPO_RAW/mediamtx.yml' -o '$DATA_DIR/mediamtx/mediamtx.yml'"
 sudo sed -i \
   -e "s~OTS_FOLDER~$DATA_DIR~g" \
-  -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.pem~g" \
-  -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.nopass.key~g" \
+  -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
+  -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/raven/raven.nopass.key~g" \
   "$DATA_DIR/mediamtx/mediamtx.yml"
 
 sudo tee /etc/systemd/system/mediamtx.service >/dev/null << EOF
@@ -245,8 +245,8 @@ done
 for f in /etc/nginx/sites-available/raven_https /etc/nginx/sites-available/raven_certificate_enrollment \
          /etc/nginx/streams-available/rabbitmq /etc/nginx/streams-available/mediamtx; do
   sudo sed -i \
-    -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.pem~g" \
-    -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/opentakserver/opentakserver.nopass.key~g" \
+    -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
+    -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/raven/raven.nopass.key~g" \
     -e "s~CA_CERT_FILE~$DATA_DIR/ca/ca.pem~g" \
     "$f"
 done
@@ -311,7 +311,7 @@ EOF
 sudo chown "$APP_USER:$APP_USER" "$APP_HOME/.raven-secrets.env"
 sudo chmod 600 "$APP_HOME/.raven-secrets.env"
 
-sudo tee /etc/systemd/system/opentakserver.service >/dev/null << EOF
+sudo tee /etc/systemd/system/raven.service >/dev/null << EOF
 [Unit]
 Wants=network.target rabbitmq-server.service postgresql.service
 After=network.target rabbitmq-server.service postgresql.service
@@ -323,8 +323,8 @@ EnvironmentFile=$APP_HOME/.raven-secrets.env
 ExecStart=$APP_HOME/c4raven-server/.venv/bin/raven
 Restart=always
 RestartSec=5s
-StandardOutput=append:$DATA_DIR/logs/opentakserver.log
-StandardError=append:$DATA_DIR/logs/opentakserver.log
+StandardOutput=append:$DATA_DIR/logs/raven.log
+StandardError=append:$DATA_DIR/logs/raven.log
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -337,7 +337,7 @@ for svc in cot_parser eud_handler eud_handler_ssl; do
 [Unit]
 Wants=network.target rabbitmq-server.service
 After=network.target rabbitmq-server.service
-PartOf=opentakserver.service
+PartOf=raven.service
 [Service]
 User=$APP_USER
 WorkingDirectory=$APP_HOME/c4raven-server
@@ -345,16 +345,16 @@ EnvironmentFile=$APP_HOME/.raven-secrets.env
 ExecStart=$APP_HOME/c4raven-server/.venv/bin/${BIN}${EXTRA_ARGS}
 Restart=always
 RestartSec=5s
-StandardOutput=append:$DATA_DIR/logs/opentakserver.log
-StandardError=append:$DATA_DIR/logs/opentakserver.log
+StandardOutput=append:$DATA_DIR/logs/raven.log
+StandardError=append:$DATA_DIR/logs/raven.log
 [Install]
 WantedBy=multi-user.target
 EOF
 done
 
 sudo systemctl daemon-reload
-sudo systemctl enable mediamtx opentakserver cot_parser eud_handler eud_handler_ssl
-sudo systemctl start mediamtx opentakserver cot_parser eud_handler eud_handler_ssl
+sudo systemctl enable mediamtx raven cot_parser eud_handler eud_handler_ssl
+sudo systemctl start mediamtx raven cot_parser eud_handler eud_handler_ssl
 
 # ---------------------------------------------------------------------------
 # RabbitMQ

@@ -10,7 +10,7 @@
 
 Setup files for a fresh deployment of our TAK (Team Awareness Kit) server —
 a Raven-branded, security-hardened
-[OpenTAKServer](https://www.opentakserver.io/) fork
+fork of [the upstream project](https://www.opentakserver.io/)
 ([c4raven-server](https://github.com/C4-Raven/c4raven-server)), paired with
 the [C4 Raven UI](https://github.com/C4-Raven/c4raven-ui) frontend.
 
@@ -57,7 +57,7 @@ error even though everything up to that point succeeded. Finish it
 yourself:
 
 ```
-sudo systemctl restart opentakserver cot_parser eud_handler eud_handler_ssl mediamtx
+sudo systemctl restart raven cot_parser eud_handler eud_handler_ssl mediamtx
 sudo systemctl restart federation-hub   # only if you have Federation Hub installed
 ```
 
@@ -67,10 +67,10 @@ update.sh` — sudo can prompt normally that way.)
 
 Pulls the latest `c4raven-server` and `c4raven-ui`, reinstalls the backend
 (`pip install -e`), rebuilds the frontend with `yarn` and deploys it to the
-webroot, then prompts for `sudo` to restart the services (`opentakserver`,
+webroot, then prompts for `sudo` to restart the services (`raven`,
 `cot_parser`, `eud_handler`, `eud_handler_ssl`, `mediamtx`, and
 `federation-hub` if it's running). Database migrations happen
-automatically when `opentakserver` restarts — there's no separate
+automatically when `raven` restarts — there's no separate
 migration step to run. Never touches your `config.yml` or data — safe to
 run any time.
 

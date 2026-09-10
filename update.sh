@@ -74,7 +74,7 @@ else
 fi
 
 echo "${GREEN}Restarting services...${NC}"
-sudo systemctl restart opentakserver cot_parser eud_handler eud_handler_ssl mediamtx
+sudo systemctl restart raven cot_parser eud_handler eud_handler_ssl mediamtx
 
 if systemctl is-active --quiet federation-hub 2>/dev/null; then
   sudo systemctl restart federation-hub
