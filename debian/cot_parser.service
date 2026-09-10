@@ -1,0 +1,15 @@
+[Unit]
+Wants=network.target rabbitmq-server.service
+After=network.target rabbitmq-server.service
+PartOf=raven.service
+[Service]
+User=raven
+WorkingDirectory=/opt/raven/c4raven-server
+EnvironmentFile=/opt/raven/.raven-secrets.env
+ExecStart=/opt/raven/c4raven-server/.venv/bin/cot_parser
+Restart=always
+RestartSec=5s
+StandardOutput=append:/opt/raven/data/logs/raven.log
+StandardError=append:/opt/raven/data/logs/raven.log
+[Install]
+WantedBy=multi-user.target

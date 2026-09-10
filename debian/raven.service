@@ -1,0 +1,15 @@
+[Unit]
+Wants=network.target rabbitmq-server.service postgresql.service
+After=network.target rabbitmq-server.service postgresql.service
+Requires=eud_handler.service eud_handler_ssl.service cot_parser.service
+[Service]
+User=raven
+WorkingDirectory=/opt/raven/c4raven-server
+EnvironmentFile=/opt/raven/.raven-secrets.env
+ExecStart=/opt/raven/c4raven-server/.venv/bin/raven
+Restart=always
+RestartSec=5s
+StandardOutput=append:/opt/raven/data/logs/raven.log
+StandardError=append:/opt/raven/data/logs/raven.log
+[Install]
+WantedBy=multi-user.target

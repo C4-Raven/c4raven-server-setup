@@ -1,0 +1,40 @@
+Source: c4raven-server
+Section: net
+Priority: optional
+Maintainer: C4 Raven <support@c4raven.net>
+Standards-Version: 4.6.2
+
+Package: c4raven-server
+Architecture: all
+Depends: debconf (>= 0.5),
+ curl,
+ git,
+ openssl,
+ python3,
+ python3-pip,
+ python3-venv,
+ python3-dev,
+ build-essential,
+ postgresql,
+ postgresql-postgis,
+ pgloader,
+ rabbitmq-server,
+ nginx,
+ libnginx-mod-stream,
+ certbot,
+ python3-certbot-nginx,
+ ffmpeg,
+ nodejs,
+ rsync
+Description: C4 Raven TAK server -- full stack, single package
+ A security-hardened fork of the upstream project this is derived from.
+ This package installs the whole server: the Raven backend (cloned and built
+ with Poetry on first install), the C4 Raven UI frontend (built with
+ Yarn and deployed to nginx's webroot), a dedicated certificate
+ authority, mediamtx for video streaming, and the systemd units that
+ tie it all together.
+ .
+ Postgres, RabbitMQ, and nginx are pulled in as real package
+ dependencies; everything specific to this app (the venv, the CA, the
+ first admin account) is set up by this package's postinst script,
+ which mirrors the previous curl|bash installer step for step.

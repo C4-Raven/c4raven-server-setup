@@ -1,0 +1,9 @@
+[Unit]
+Wants=network.target
+[Service]
+User=raven
+ExecStart=/opt/raven/data/mediamtx/mediamtx /opt/raven/data/mediamtx/mediamtx.yml
+Restart=on-failure
+RestartSec=5s
+[Install]
+WantedBy=multi-user.target

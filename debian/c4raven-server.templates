@@ -1,0 +1,26 @@
+Template: c4raven-server/domain
+Type: string
+Default:
+Description: Public domain name for this server (optional):
+ If this server has a public domain name that already points at its IP,
+ enter it here to get a real Let's Encrypt certificate via certbot and
+ enable Federation Hub to be reachable by hostname. Leave blank to use a
+ self-signed certificate and access the server by IP address instead --
+ you can always run certbot by hand later.
+
+Template: c4raven-server/turnstile-enable
+Type: boolean
+Default: false
+Description: Enable Cloudflare Turnstile on the login page?
+ Turnstile adds a human-verification checkbox to the login page. You'll
+ need a site key and secret key from the Cloudflare dashboard's Turnstile
+ section already in hand if you say yes here.
+
+Template: c4raven-server/turnstile-site-key
+Type: string
+Default:
+Description: Turnstile site key:
+
+Template: c4raven-server/turnstile-secret-key
+Type: password
+Description: Turnstile secret key:

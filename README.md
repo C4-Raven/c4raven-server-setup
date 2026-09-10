@@ -16,6 +16,32 @@ the [C4 Raven UI](https://github.com/C4-Raven/c4raven-ui) frontend.
 
 ## Install
 
+### Option 1: `.deb` package
+
+Download the latest `c4raven-server_*_all.deb` from
+[Releases](https://github.com/C4-Raven/c4raven-server-setup/releases) and:
+
+```
+sudo apt install ./c4raven-server_*_all.deb
+```
+
+apt pulls in PostgreSQL, RabbitMQ, nginx, and everything else this needs as
+real dependencies, then prompts for the same two questions install.sh
+below asks (Cloudflare Turnstile, a public domain) via the standard
+Debian config-file prompt, and does the rest of the setup (backend venv,
+frontend build, certificate authority, systemd services) in its postinst
+script. `sudo apt install ./c4raven-server_*_all.deb` again on a newer
+`.deb` to upgrade — each release is pinned to a specific, reproducible
+commit of `c4raven-server`/`c4raven-ui` rather than always floating to
+`master`.
+
+`apt remove` stops the services but leaves your data in place; `apt purge`
+prints exactly what a full wipe (database, `/opt/raven`, the `raven`
+system user) requires rather than doing it automatically — that's too
+high-stakes to run unattended.
+
+### Option 2: `install.sh`
+
 One command, on a fresh Ubuntu box:
 
 ```
@@ -29,8 +55,10 @@ services. It interactively asks whether to enable Cloudflare Turnstile
 Cloudflare dashboard's Turnstile section) and whether to configure a public
 domain (gets you a real Let's Encrypt certificate instead of a self-signed
 one). Run as a normal user, not root — it uses `sudo` itself where needed.
+Update later with `update.sh`, which always pulls the latest `master`
+rather than a pinned version.
 
-At the end it creates the first administrator account (see
+At the end, either option creates the first administrator account (see
 [`seed_admin.py`](#files) below) and prints the URL to log in at.
 
 ### Federation Hub
@@ -77,8 +105,18 @@ run any time.
 ## Files
 
 - **`install.sh`** / **`update.sh`** — see above.
+- **`debian/`**, **`usr/`**, **`build-deb.sh`** — the `.deb` package
+  source. `build-deb.sh` stages a package tree and calls `dpkg-deb
+  --build` directly (not `dpkg-buildpackage`/debhelper — there's no
+  compilation at package-build time, the venv is built by postinst on the
+  target machine). `.github/workflows/release.yml` runs it on every `v*`
+  tag push and attaches the result to a GitHub Release.
 - **`nginx_configs/`**, **`mediamtx.yml`**, **`rabbitmq.conf`** — templates
-  the installer fetches and fills in; not meant to be used standalone.
+  `install.sh` fetches and fills in at install time; `usr/share/
+  c4raven-server/` holds the `.deb`'s copies of the same files, already
+  fully substituted at build time since every path they reference
+  (`/opt/raven/...`) is a fixed constant, not something either install
+  path lets you configure. Neither is meant to be used standalone.
 - **`seed_admin.py`** — run automatically by `install.sh` on a freshly
   migrated (empty) database to create the first administrator account:
   - username: `admin`

@@ -1,0 +1,49 @@
+#!/bin/bash
+# postrm for the c4raven-server .deb.
+set -e
+
+APP_USER="raven"
+APP_HOME="/opt/raven"
+DB_NAME="raven"
+
+case "$1" in
+  remove)
+    # Stop + disable the units this package shipped. Deliberately leaves
+    # /opt/raven, the database, and nginx configs in place -- `remove`
+    # (as opposed to `purge`) is expected to be reversible by reinstalling.
+    systemctl stop raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+    systemctl disable raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+    ;;
+
+  purge)
+    systemctl stop raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+    systemctl disable raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+
+    # Deliberately NOT done automatically: dropping the Postgres database,
+    # deleting /opt/raven/data (certs, config, mediamtx recordings), or
+    # removing the 'raven' system user. A TAK server's device/user
+    # database is too high-stakes to delete from an unattended `apt
+    # purge` -- print exactly what a full wipe requires instead.
+    cat << EOF
+
+c4raven-server has been removed, but its data was intentionally left in
+place. To fully wipe it:
+
+    sudo systemctl stop postgresql
+    sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;"
+    sudo -u postgres psql -c "DROP ROLE IF EXISTS $DB_NAME;"
+    sudo rm -rf $APP_HOME
+    sudo rm -rf /var/www/html/raven
+    sudo userdel -r $APP_USER
+    sudo rm -f /etc/nginx/sites-available/raven_* /etc/nginx/sites-enabled/raven_*
+    sudo rm -f /etc/nginx/streams-available/{rabbitmq,mediamtx} /etc/nginx/streams-enabled/{rabbitmq,mediamtx}
+    sudo systemctl reload nginx
+
+EOF
+    ;;
+
+  upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    ;;
+esac
+
+exit 0

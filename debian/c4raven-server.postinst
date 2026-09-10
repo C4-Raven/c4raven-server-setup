@@ -1,0 +1,300 @@
+#!/bin/bash
+# postinst for the c4raven-server .deb.
+#
+# Mirrors c4raven-server-setup/install.sh step for step -- see that script
+# for the curl|bash equivalent this replaces. Every step keeps install.sh's
+# "check before creating" idempotency, so this runs safely both on a fresh
+# install and on every `apt upgrade` to a newer c4raven-server package.
+set -euo pipefail
+
+. /usr/share/debconf/confmodule
+
+APP_USER="raven"
+APP_HOME="/opt/raven"
+DATA_DIR="$APP_HOME/data"
+DB_NAME="raven"
+WEBROOT="/var/www/html/raven"
+PKGDATA="/usr/share/c4raven-server"
+
+run_as_app() {
+  sudo -u "$APP_USER" -H bash -lc "$1"
+}
+
+case "$1" in
+  configure)
+    echo "Setting up the dedicated '$APP_USER' account..."
+    if ! id "$APP_USER" &>/dev/null; then
+      useradd --system --create-home --home-dir "$APP_HOME" --shell /bin/bash "$APP_USER"
+      chmod 750 "$APP_HOME"
+    fi
+    run_as_app "mkdir -p '$DATA_DIR/logs'"
+
+    # -------------------------------------------------------------------
+    # Backend: clone (first install only) + checkout the exact commit this
+    # package version was built against, then install. This is a real
+    # improvement over install.sh/update.sh, which always float to
+    # origin/master -- installing or upgrading this .deb now installs a
+    # specific, reproducible version instead.
+    # -------------------------------------------------------------------
+    echo "Installing the Raven backend..."
+    if [ ! -d "$APP_HOME/c4raven-server" ]; then
+      run_as_app "git clone https://github.com/C4-Raven/c4raven-server.git '$APP_HOME/c4raven-server'"
+    fi
+    if [ -f "$PKGDATA/SERVER_SHA" ]; then
+      SERVER_SHA=$(cat "$PKGDATA/SERVER_SHA")
+      run_as_app "cd '$APP_HOME/c4raven-server' && git fetch origin && git checkout '$SERVER_SHA'"
+    fi
+
+    if ! sudo -u "$APP_USER" test -x "$APP_HOME/.local/bin/poetry"; then
+      run_as_app "curl -sSL https://install.python-poetry.org | python3 -"
+    fi
+    run_as_app "poetry config virtualenvs.in-project true"
+    run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
+
+    FLASK_ENV="FLASK_APP=raven.app RAVEN_DATA_FOLDER='$DATA_DIR'"
+    run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven generate-config"
+    echo "Raven backend installed."
+
+    # -------------------------------------------------------------------
+    # PostgreSQL
+    # -------------------------------------------------------------------
+    echo "Setting up PostgreSQL..."
+    su postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS postgis'" 2>/dev/null || true
+
+    DB_USER_EXISTS=$(su postgres -c "psql -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_NAME'\"")
+    if [ "$DB_USER_EXISTS" != 1 ]; then
+      POSTGRESQL_PASSWORD=$(tr -dc 'A-Za-z0-9!?%=' < /dev/urandom | head -c 20)
+      su postgres -c "psql -c \"create role $DB_NAME with login password '${POSTGRESQL_PASSWORD}';\""
+      DB_URI="postgresql+psycopg://$DB_NAME:${POSTGRESQL_PASSWORD}@127.0.0.1/$DB_NAME"
+      run_as_app "python3 - '$DB_URI' << 'PYEOF'
+import sys, yaml
+uri = sys.argv[1]
+path = '$DATA_DIR/config.yml'
+with open(path) as f:
+    conf = yaml.safe_load(f)
+conf['SQLALCHEMY_DATABASE_URI'] = uri
+with open(path, 'w') as f:
+    yaml.safe_dump(conf, f)
+PYEOF"
+    else
+      # Already exists (a previous install or upgrade) -- config.yml
+      # already has the right SQLALCHEMY_DATABASE_URI from that run, and
+      # we don't have the password to rebuild it here.
+      DB_URI=$(run_as_app "python3 -c \"import yaml; print(yaml.safe_load(open('$DATA_DIR/config.yml'))['SQLALCHEMY_DATABASE_URI'])\"")
+    fi
+
+    DB_EXISTS=$(su postgres -c "psql -XtAc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\"")
+    if [ "$DB_EXISTS" != 1 ]; then
+      su postgres -c "psql -c 'create database $DB_NAME;'"
+    fi
+    su postgres -c "psql -c 'GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAME\" TO $DB_NAME;'"
+    su postgres -c "psql -d $DB_NAME -c 'GRANT ALL ON SCHEMA public TO $DB_NAME;'"
+    echo "Database ready."
+    # Migrations run automatically inside the app itself on every startup
+    # (see init_extensions() in raven/app.py) -- no separate `flask db
+    # upgrade` step needed or wanted here.
+
+    # -------------------------------------------------------------------
+    # Cloudflare Turnstile (from debconf)
+    # -------------------------------------------------------------------
+    db_get c4raven-server/turnstile-enable
+    if [ "$RET" = "true" ]; then
+      db_get c4raven-server/turnstile-site-key
+      TURNSTILE_SITE_KEY="$RET"
+      db_get c4raven-server/turnstile-secret-key
+      TURNSTILE_SECRET_KEY="$RET"
+      run_as_app "python3 - '$TURNSTILE_SITE_KEY' '$TURNSTILE_SECRET_KEY' << 'PYEOF'
+import sys, yaml
+site_key, secret_key = sys.argv[1], sys.argv[2]
+path = '$DATA_DIR/config.yml'
+with open(path) as f:
+    conf = yaml.safe_load(f)
+conf['RAVEN_TURNSTILE_ENABLE'] = True
+conf['RAVEN_TURNSTILE_SITE_KEY'] = site_key
+conf['RAVEN_TURNSTILE_SECRET_KEY'] = secret_key
+with open(path, 'w') as f:
+    yaml.safe_dump(conf, f)
+PYEOF"
+      echo "Turnstile configured."
+    fi
+
+    db_get c4raven-server/domain
+    DOMAIN="$RET"
+
+    # -------------------------------------------------------------------
+    # Certificate authority
+    # -------------------------------------------------------------------
+    echo "Creating the certificate authority..."
+    run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven create-ca"
+    # Unlike create-ca, issue-server-certificate is NOT idempotent -- it
+    # unconditionally wipes and regenerates certs/raven/ if it already
+    # exists (CertificateAuthority.issue_certificate() does an
+    # unconditional shutil.rmtree). install.sh gets away with calling it
+    # unguarded because it only ever runs once per install; this postinst
+    # runs on every upgrade too, so it needs its own guard to avoid
+    # silently reissuing (and invalidating) the server's TLS cert on
+    # every `apt upgrade`.
+    if [ ! -f "$DATA_DIR/ca/certs/raven/raven.pem" ]; then
+      run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven issue-server-certificate"
+    fi
+
+    # -------------------------------------------------------------------
+    # mediamtx
+    # -------------------------------------------------------------------
+    echo "Installing mediamtx..."
+    run_as_app "mkdir -p '$DATA_DIR/mediamtx/recordings'"
+    if [ ! -f "$DATA_DIR/mediamtx/mediamtx" ]; then
+      run_as_app "$APP_HOME/.local/bin/poetry run pip install --quiet lastversion 2>/dev/null || pip3 install --user --quiet lastversion"
+      ARCH=$(uname -m)
+      if [ "$ARCH" == "x86_64" ]; then
+        run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_amd64' --assets download bluenviron/mediamtx --only 1.13.0"
+      elif [ "$ARCH" == "aarch64" ]; then
+        run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_arm64' --assets download bluenviron/mediamtx --only 1.13.0"
+      else
+        run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_armv7' --assets download bluenviron/mediamtx --only 1.13.0"
+      fi
+      run_as_app "cd '$DATA_DIR/mediamtx' && tar -xf ./*.tar.gz"
+    fi
+    # Already fully substituted at package-build time -- every path this
+    # config needs is a fixed constant (APP_HOME/DATA_DIR never vary), so
+    # there's nothing left to template here, unlike install.sh's sed step.
+    install -o "$APP_USER" -g "$APP_USER" -m 644 "$PKGDATA/mediamtx.yml" "$DATA_DIR/mediamtx/mediamtx.yml"
+
+    # -------------------------------------------------------------------
+    # nginx
+    # -------------------------------------------------------------------
+    echo "Configuring nginx..."
+    if ! grep -q "stream {" /etc/nginx/nginx.conf; then
+      echo "
+stream {
+        include /etc/nginx/streams-enabled/*;
+}" >> /etc/nginx/nginx.conf
+    fi
+
+    mkdir -p /etc/nginx/streams-available /etc/nginx/streams-enabled
+
+    for f in raven_http raven_https raven_certificate_enrollment; do
+      install -m 644 "$PKGDATA/nginx_configs/$f" "/etc/nginx/sites-available/$f"
+    done
+    for f in rabbitmq mediamtx; do
+      install -m 644 "$PKGDATA/nginx_configs/$f" "/etc/nginx/streams-available/$f"
+    done
+
+    # Only touch our own site files -- don't blow away unrelated
+    # sites-enabled entries an admin may have added by hand (install.sh
+    # does `rm -f sites-enabled/*`, which is fine for a from-scratch
+    # install but too heavy-handed for a package upgrade).
+    ln -sf /etc/nginx/sites-available/raven_http /etc/nginx/sites-enabled/raven_http
+    ln -sf /etc/nginx/sites-available/raven_https /etc/nginx/sites-enabled/raven_https
+    ln -sf /etc/nginx/sites-available/raven_certificate_enrollment /etc/nginx/sites-enabled/raven_certificate_enrollment
+    ln -sf /etc/nginx/streams-available/rabbitmq /etc/nginx/streams-enabled/rabbitmq
+    ln -sf /etc/nginx/streams-available/mediamtx /etc/nginx/streams-enabled/mediamtx
+
+    mkdir -p "$WEBROOT"
+    chmod a+rw "$WEBROOT"
+
+    systemctl enable nginx
+    systemctl restart nginx
+
+    if [ -n "$DOMAIN" ]; then
+      echo "Requesting a Let's Encrypt certificate for ${DOMAIN}..."
+      certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect || \
+        echo "certbot failed -- check that ${DOMAIN} already resolves to this server's public IP, then run: sudo certbot --nginx -d ${DOMAIN}"
+    fi
+
+    # -------------------------------------------------------------------
+    # Frontend
+    # -------------------------------------------------------------------
+    echo "Building and deploying the C4 Raven UI frontend..."
+    if [ ! -d "$APP_HOME/c4raven-ui" ]; then
+      run_as_app "git clone https://github.com/C4-Raven/c4raven-ui.git '$APP_HOME/c4raven-ui'"
+    fi
+    if [ -f "$PKGDATA/UI_SHA" ]; then
+      UI_SHA=$(cat "$PKGDATA/UI_SHA")
+      run_as_app "cd '$APP_HOME/c4raven-ui' && git fetch origin && git checkout '$UI_SHA'"
+    fi
+    # c4raven-ui pins yarn 4 (packageManager in package.json) -- npm
+    # doesn't understand its lockfile and will silently downgrade/corrupt
+    # it. `corepack yarn` runs the pinned version directly.
+    run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn install"
+    run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
+    # Deploy as root: whatever previously owned files are in the webroot
+    # might not be deletable by $APP_USER even though the directory is
+    # world-writable (confirmed live against a server whose webroot had
+    # www-data-owned files). Root can always write/delete here regardless
+    # of prior ownership.
+    rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete "$APP_HOME/c4raven-ui/dist/" "$WEBROOT/"
+    chown -R "$APP_USER:$APP_USER" "$WEBROOT"
+
+    # -------------------------------------------------------------------
+    # Secrets env file + systemd units (units themselves already shipped
+    # statically by the package at /lib/systemd/system/ -- nothing to
+    # template, just enable/start them)
+    # -------------------------------------------------------------------
+    echo "Starting services..."
+    if [ ! -f "$APP_HOME/.raven-secrets.env" ]; then
+      cat > "$APP_HOME/.raven-secrets.env" << EOF
+RAVEN_DATA_FOLDER=$DATA_DIR
+SQLALCHEMY_DATABASE_URI=$DB_URI
+RAVEN_RABBITMQ_USERNAME=guest
+RAVEN_RABBITMQ_PASSWORD=guest
+RAVEN_FEDHUB_ENABLE=False
+RAVEN_MEDIAMTX_ENABLE=True
+EOF
+      chown "$APP_USER:$APP_USER" "$APP_HOME/.raven-secrets.env"
+      chmod 600 "$APP_HOME/.raven-secrets.env"
+    fi
+
+    systemctl daemon-reload
+    systemctl enable mediamtx raven cot_parser eud_handler eud_handler_ssl
+    systemctl restart mediamtx raven cot_parser eud_handler eud_handler_ssl
+
+    # -------------------------------------------------------------------
+    # RabbitMQ
+    # -------------------------------------------------------------------
+    echo "Configuring RabbitMQ..."
+    install -m 644 "$PKGDATA/rabbitmq.conf" /etc/rabbitmq/rabbitmq.conf
+
+    RABBITMQ_VERSION=$(rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
+    if [ -n "$RABBITMQ_VERSION" ] && ! grep -q PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf 2>/dev/null; then
+      echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" >> /etc/rabbitmq/rabbitmq-env.conf
+    fi
+    systemctl restart rabbitmq-server
+    rabbitmq-plugins enable rabbitmq_mqtt rabbitmq_auth_backend_http || true
+    systemctl restart rabbitmq-server
+
+    # -------------------------------------------------------------------
+    # Federation Hub -- requires a licensed TAK.gov account, so this can't
+    # be prompted for or downloaded automatically. Point to the manual
+    # follow-up instead of trying to collect a file path via debconf.
+    # -------------------------------------------------------------------
+    echo
+    echo "Federation Hub requires a takserver-fed-hub_*.deb package, only"
+    echo "available from a licensed TAK.gov account -- this package can't"
+    echo "include it. See https://github.com/C4-Raven/federation-hub-setup"
+    echo "if you have one and want to install it."
+
+    # -------------------------------------------------------------------
+    # First admin account
+    # -------------------------------------------------------------------
+    echo "Creating the first administrator account..."
+    run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run python '$PKGDATA/seed_admin.py'" || \
+      echo "Skipped -- an admin account already exists."
+
+    echo
+    echo "Setup complete."
+    if [ -n "$DOMAIN" ]; then
+      echo "Web UI: https://${DOMAIN}"
+    else
+      echo "Web UI: https://$(hostname -I | awk '{print $1}')"
+    fi
+    echo "First login: username 'admin', password 'password' -- you'll be forced to set a real password and 2FA immediately."
+    ;;
+
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+esac
+
+db_stop
+
+exit 0
