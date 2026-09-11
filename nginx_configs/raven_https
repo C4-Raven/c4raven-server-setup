@@ -2,7 +2,7 @@ server {
 
         root /var/www/html/raven;
         index index.html index.htm index.nginx-debian.html;
-        server_name opentakserver_443;
+        server_name raven_443;
 
         # Do not allow calls to the Marti API on port 443. Only allow them to port 8443 where
         # SSL client certificate verification is enabled
@@ -69,7 +69,7 @@ server {
 
         root /var/www/html/raven;
         index index.html index.htm index.nginx-debian.html;
-        server_name opentakserver_8443;
+        server_name raven_8443;
 
         # Do not allow certificate enrollment on port 8443
         location /Marti/api/tls {

@@ -38,7 +38,7 @@ echo "${GREEN}Updating the Raven backend...${NC}"
 # rewrites on every run -- discard that one file's local drift before
 # pulling (confirmed live: a dirty _versions.ts blocks the frontend pull
 # below the exact same way) rather than let it silently block future pulls.
-run_as_app "cd '$APP_HOME/c4raven-server' && git checkout -- raven/__init__.py 2>/dev/null; git fetch origin && git pull --ff-only origin master"
+run_as_app "cd '$APP_HOME/c4raven-server' && git checkout -- raven/__init__.py 2>/dev/null; git fetch origin && git pull --ff-only origin main"
 run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
 echo "${GREEN}Backend updated.${NC}"
 # Migrations run automatically inside the app on every startup (see
@@ -50,7 +50,7 @@ if sudo test -d "$APP_HOME/c4raven-ui"; then
   # src/_versions.ts is an auto-generated build stamp that `yarn build`
   # rewrites every time -- confirmed live: without discarding it first, the
   # very next pull fails outright ("local changes would be overwritten").
-  run_as_app "cd '$APP_HOME/c4raven-ui' && git checkout -- src/_versions.ts 2>/dev/null; git fetch origin && git pull --ff-only origin master"
+  run_as_app "cd '$APP_HOME/c4raven-ui' && git checkout -- src/_versions.ts 2>/dev/null; git fetch origin && git pull --ff-only origin main"
   # c4raven-ui pins yarn 4 (packageManager in package.json) -- npm doesn't
   # understand its lockfile and will silently downgrade/corrupt it if used
   # here instead. `corepack yarn` runs the pinned version directly without

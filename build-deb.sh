@@ -14,8 +14,8 @@
 set -euo pipefail
 
 : "${PKG_VERSION:?Set PKG_VERSION, e.g. PKG_VERSION=2.1.2 ./build-deb.sh}"
-SERVER_SHA="${SERVER_SHA:-$(git ls-remote https://github.com/C4-Raven/c4raven-server.git refs/heads/master | cut -f1)}"
-UI_SHA="${UI_SHA:-$(git ls-remote https://github.com/C4-Raven/c4raven-ui.git refs/heads/master | cut -f1)}"
+SERVER_SHA="${SERVER_SHA:-$(git ls-remote https://github.com/C4-Raven/c4raven-server.git refs/heads/main | cut -f1)}"
+UI_SHA="${UI_SHA:-$(git ls-remote https://github.com/C4-Raven/c4raven-ui.git refs/heads/main | cut -f1)}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STAGE="$HERE/build/c4raven-server_${PKG_VERSION}_all"

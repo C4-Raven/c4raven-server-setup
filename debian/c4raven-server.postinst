@@ -33,7 +33,7 @@ case "$1" in
     # Backend: clone (first install only) + checkout the exact commit this
     # package version was built against, then install. This is a real
     # improvement over install.sh/update.sh, which always float to
-    # origin/master -- installing or upgrading this .deb now installs a
+    # origin/main -- installing or upgrading this .deb now installs a
     # specific, reproducible version instead.
     # -------------------------------------------------------------------
     echo "Installing the Raven backend..."
