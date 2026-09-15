@@ -8,7 +8,7 @@
 #   PKG_VERSION=2.1.2 ./build-deb.sh
 #
 # SERVER_SHA / UI_SHA (optional): pin the package to specific commits of
-# c4raven-server / c4raven-ui. Defaults to each repo's current master tip
+# c4raven-server / c4raven-ui. Defaults to each repo's current main tip
 # at build time -- this is what makes a given .deb version reproducible:
 # postinst checks out exactly this commit, not a floating branch.
 set -euo pipefail
