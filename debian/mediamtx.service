@@ -1,5 +1,6 @@
 [Unit]
 Wants=network.target
+After=network.target
 [Service]
 User=raven
 ExecStart=/opt/raven/data/mediamtx/mediamtx /opt/raven/data/mediamtx/mediamtx.yml

@@ -37,7 +37,8 @@ awk '/^Package:/{f=1} f' "$HERE/debian/control" \
       '/^Package:/{print; print "Version: " ver; print "Maintainer: " maint; next} 1' \
   > "$STAGE/DEBIAN/control"
 
-for f in postinst postrm config; do
+for f in preinst postinst prerm postrm config; do
+  [ -f "$HERE/debian/c4raven-server.$f" ] || continue
   cp "$HERE/debian/c4raven-server.$f" "$STAGE/DEBIAN/$f"
   chmod 755 "$STAGE/DEBIAN/$f"
 done
@@ -49,7 +50,30 @@ for svc in raven eud_handler eud_handler_ssl cot_parser mediamtx; do
 done
 
 # --- data files -------------------------------------------------------
-cp -r "$HERE/usr/share/c4raven-server/." "$STAGE/usr/share/c4raven-server/"
+# The nginx/mediamtx/rabbitmq templates are shared with install.sh, which
+# fills in the cert/data paths with sed at install time. Every one of those
+# paths is a fixed constant under /opt/raven for the .deb, so do the same
+# substitution here, at build time, from the ONE copy of each template --
+# a second hand-maintained copy under usr/share/ drifted from the
+# templates within days.
+DATA_DIR=/opt/raven/data
+subst() {
+  sed -e "s~OTS_FOLDER~$DATA_DIR~g" \
+      -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
+      -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/raven/raven.nopass.key~g" \
+      -e "s~CA_CERT_FILE~$DATA_DIR/ca/ca.pem~g" \
+      "$1" > "$2"
+}
+mkdir -p "$STAGE/usr/share/c4raven-server/nginx_configs"
+for f in "$HERE"/nginx_configs/*; do
+  subst "$f" "$STAGE/usr/share/c4raven-server/nginx_configs/$(basename "$f")"
+done
+subst "$HERE/mediamtx.yml" "$STAGE/usr/share/c4raven-server/mediamtx.yml"
+cp "$HERE/rabbitmq.conf" "$HERE/seed_admin.py" "$STAGE/usr/share/c4raven-server/"
+if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE' "$STAGE/usr/share/c4raven-server/"; then
+  echo "error: unsubstituted placeholder left in staged data files" >&2
+  exit 1
+fi
 echo -n "$SERVER_SHA" > "$STAGE/usr/share/c4raven-server/SERVER_SHA"
 echo -n "$UI_SHA" > "$STAGE/usr/share/c4raven-server/UI_SHA"
 

@@ -69,14 +69,30 @@ run_as_app() {
 echo "${GREEN}Installing system packages via apt. You may be prompted for your sudo password...${NC}"
 sudo apt update && sudo NEEDRESTART_MODE=a apt upgrade -y
 sudo NEEDRESTART_MODE=a apt install -y \
-  curl git openssl \
-  python3 python3-pip python3-venv python3-dev \
+  curl git openssl rsync \
+  python3 python3-pip python3-venv python3-dev python3-yaml build-essential \
   postgresql postgresql-postgis pgloader \
   rabbitmq-server \
   nginx libnginx-mod-stream \
   certbot python3-certbot-nginx \
-  ffmpeg \
-  nodejs
+  ffmpeg
+
+# Node.js: the UI build (vite 8) needs Node 20.19+ / 22.12+, and Ubuntu
+# 24.04's own `nodejs` package is 18.x with no corepack at all. Use the
+# NodeSource 22.x LTS repo unless a new-enough node is already installed.
+node_ok() {
+  command -v node >/dev/null 2>&1 && node -e '
+    const [a, b] = process.versions.node.split(".").map(Number);
+    process.exit((a === 20 && b >= 19) || (a === 22 && b >= 12) || a >= 23 ? 0 : 1);'
+}
+if ! node_ok; then
+  echo "${GREEN}Installing Node.js 22 (NodeSource)...${NC}"
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo NEEDRESTART_MODE=a apt install -y nodejs
+fi
+# corepack runs the yarn version c4raven-ui pins; NodeSource ships it, but
+# make sure, since a distro node may not.
+command -v corepack >/dev/null 2>&1 || sudo npm install -g corepack
 
 echo "${GREEN}Setting up the dedicated '$APP_USER' account...${NC}"
 if ! id "$APP_USER" &>/dev/null; then
@@ -114,11 +130,12 @@ echo "${GREEN}Raven backend installed.${NC}"
 # PostgreSQL
 # ---------------------------------------------------------------------------
 echo "${GREEN}Setting up PostgreSQL...${NC}"
-sudo su postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS postgis'" 2>/dev/null || true
-
 DB_USER_EXISTS=$(sudo su postgres -c "psql -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_NAME'\"")
 if [ "$DB_USER_EXISTS" != 1 ]; then
-  POSTGRESQL_PASSWORD=$(tr -dc 'A-Za-z0-9!?%=' < /dev/urandom | head -c 20)
+  # Hex only: this goes raw into a URI, where `%` would be percent-decoded
+  # by SQLAlchemy/libpq. (Not `tr ... | head -c`: under pipefail, head
+  # closing the pipe kills tr with SIGPIPE and the whole script with it.)
+  POSTGRESQL_PASSWORD=$(openssl rand -hex 16)
   sudo su postgres -c "psql -c \"create role $DB_NAME with login password '${POSTGRESQL_PASSWORD}';\""
 else
   read -rp "${GREEN}PostgreSQL user '$DB_NAME' already exists -- enter its password: ${NC}" POSTGRESQL_PASSWORD < /dev/tty
@@ -141,6 +158,7 @@ if [ "$DB_EXISTS" != 1 ]; then
 fi
 sudo su postgres -c "psql -c 'GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAME\" TO $DB_NAME;'"
 sudo su postgres -c "psql -d $DB_NAME -c 'GRANT ALL ON SCHEMA public TO $DB_NAME;'"
+sudo su postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS postgis'"
 echo "${GREEN}Database ready.${NC}"
 # Migrations run automatically inside the app itself on every startup
 # (see init_extensions() in raven/app.py) -- no separate `flask db upgrade`
@@ -191,16 +209,15 @@ run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven i
 echo "${GREEN}Installing mediamtx...${NC}"
 run_as_app "mkdir -p '$DATA_DIR/mediamtx/recordings'"
 if ! sudo test -f "$DATA_DIR/mediamtx/mediamtx"; then
-  run_as_app "$APP_HOME/.local/bin/poetry run pip install --quiet lastversion 2>/dev/null || pip3 install --user --quiet lastversion"
-  ARCH=$(uname -m)
-  if [ "$ARCH" == "x86_64" ]; then
-    run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_amd64' --assets download bluenviron/mediamtx --only 1.13.0"
-  elif [ "$ARCH" == "aarch64" ]; then
-    run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_arm64' --assets download bluenviron/mediamtx --only 1.13.0"
-  else
-    run_as_app "cd '$DATA_DIR/mediamtx' && ~/.local/bin/lastversion --filter '~*linux_armv7' --assets download bluenviron/mediamtx --only 1.13.0"
-  fi
-  run_as_app "cd '$DATA_DIR/mediamtx' && tar -xf ./*.tar.gz"
+  # lastversion is one of the backend's own dependencies, so it's already in
+  # the Poetry venv; run it from there (`poetry run` needs the project cwd).
+  case "$(uname -m)" in
+    x86_64)  MTX_ARCH=amd64 ;;
+    aarch64) MTX_ARCH=arm64 ;;
+    *)       MTX_ARCH=armv7 ;;
+  esac
+  run_as_app "cd '$APP_HOME/c4raven-server' && poetry run lastversion --filter '~*linux_$MTX_ARCH' --only 1.13.0 -o '$DATA_DIR/mediamtx/mediamtx.tar.gz' --assets download bluenviron/mediamtx"
+  run_as_app "cd '$DATA_DIR/mediamtx' && tar -xf mediamtx.tar.gz && rm -f mediamtx.tar.gz"
 fi
 run_as_app "curl -fsSL '$REPO_RAW/mediamtx.yml' -o '$DATA_DIR/mediamtx/mediamtx.yml'"
 sudo sed -i \
@@ -208,10 +225,15 @@ sudo sed -i \
   -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
   -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/raven/raven.nopass.key~g" \
   "$DATA_DIR/mediamtx/mediamtx.yml"
+# WebRTC clients outside the LAN can only reach us if mediamtx advertises a
+# public host in its ICE candidates, not just the interface IPs.
+sudo sed -i "s~^webrtcAdditionalHosts: \[\]~webrtcAdditionalHosts: [${DOMAIN:-$(hostname -I | awk '{print $1}')}]~" \
+  "$DATA_DIR/mediamtx/mediamtx.yml"
 
 sudo tee /etc/systemd/system/mediamtx.service >/dev/null << EOF
 [Unit]
 Wants=network.target
+After=network.target
 [Service]
 User=$APP_USER
 ExecStart=$DATA_DIR/mediamtx/mediamtx $DATA_DIR/mediamtx/mediamtx.yml
@@ -255,8 +277,9 @@ sudo ln -sf /etc/nginx/sites-available/raven_* /etc/nginx/sites-enabled/
 sudo ln -sf /etc/nginx/streams-available/rabbitmq /etc/nginx/streams-enabled/
 sudo ln -sf /etc/nginx/streams-available/mediamtx /etc/nginx/streams-enabled/
 
-sudo mkdir -p "$WEBROOT"
-sudo chmod a+rw "$WEBROOT"
+# Owned by the app user, not world-writable: any local account could
+# otherwise swap out the served JavaScript.
+sudo install -d -o "$APP_USER" -g "$APP_USER" -m 755 "$WEBROOT"
 
 sudo systemctl enable nginx
 sudo systemctl restart nginx
@@ -294,6 +317,20 @@ run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
 # has left it non-writable by its own uid/gid.
 sudo rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete "$APP_HOME/c4raven-ui/dist/" "$WEBROOT/"
 sudo chown -R "$APP_USER:$APP_USER" "$WEBROOT"
+
+# ---------------------------------------------------------------------------
+# RabbitMQ (before the Raven services start: they connect to it on boot)
+# ---------------------------------------------------------------------------
+echo "${GREEN}Configuring RabbitMQ...${NC}"
+sudo curl -fsSL "$REPO_RAW/rabbitmq.conf" -o /etc/rabbitmq/rabbitmq.conf
+
+RABBITMQ_VERSION=$(sudo rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
+if [ -n "$RABBITMQ_VERSION" ] && ! sudo grep -qs PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf; then
+  echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" | sudo tee -a /etc/rabbitmq/rabbitmq-env.conf > /dev/null
+fi
+sudo systemctl restart rabbitmq-server
+sudo rabbitmq-plugins enable rabbitmq_mqtt rabbitmq_auth_backend_http || true
+sudo systemctl restart rabbitmq-server
 
 # ---------------------------------------------------------------------------
 # Secrets env file + systemd units for the Raven services
@@ -356,19 +393,16 @@ sudo systemctl daemon-reload
 sudo systemctl enable mediamtx raven cot_parser eud_handler eud_handler_ssl
 sudo systemctl start mediamtx raven cot_parser eud_handler eud_handler_ssl
 
-# ---------------------------------------------------------------------------
-# RabbitMQ
-# ---------------------------------------------------------------------------
-echo "${GREEN}Configuring RabbitMQ...${NC}"
-sudo curl -fsSL "$REPO_RAW/rabbitmq.conf" -o /etc/rabbitmq/rabbitmq.conf
-
-RABBITMQ_VERSION=$(sudo rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
-if [ -n "$RABBITMQ_VERSION" ]; then
-  echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" | sudo tee -a /etc/rabbitmq/rabbitmq-env.conf > /dev/null
-fi
-sudo systemctl restart rabbitmq-server
-sudo rabbitmq-plugins enable rabbitmq_mqtt rabbitmq_auth_backend_http || true
-sudo systemctl restart rabbitmq-server
+# The database schema is created by the migrations the server runs on
+# startup, so wait for it to answer before anything touches the database.
+echo "${GREEN}Waiting for the Raven server to come up...${NC}"
+for i in $(seq 1 60); do
+  if curl -fsS -o /dev/null http://127.0.0.1:8081/api/health 2>/dev/null; then break; fi
+  if [ "$i" -eq 60 ]; then
+    echo "${YELLOW}raven did not answer on 127.0.0.1:8081 after 2 minutes -- check $DATA_DIR/logs/raven.log${NC}"
+  fi
+  sleep 2
+done
 
 # ---------------------------------------------------------------------------
 # Federation Hub (optional -- requires a licensed TAK.gov account, and
@@ -418,12 +452,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# First admin account
+# First admin account. The server creates `administrator`/`password` itself
+# on first start; seed_admin.py makes that account change its password on
+# first login (or creates it that way if it doesn't exist yet). Exit 3 =
+# real accounts already exist, nothing touched.
 # ---------------------------------------------------------------------------
-echo "${GREEN}Creating the first administrator account...${NC}"
+echo "${GREEN}Hardening the first administrator account...${NC}"
 run_as_app "curl -fsSL '$REPO_RAW/seed_admin.py' -o '$APP_HOME/seed_admin.py'"
-run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run python '$APP_HOME/seed_admin.py'" || \
-  echo "${YELLOW}Skipped -- an admin account already exists.${NC}"
+SEEDED=0
+run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run python '$APP_HOME/seed_admin.py'" || SEEDED=$?
 
 rm -rf "$INSTALLER_DIR"
 
@@ -434,4 +471,8 @@ if [ -n "$DOMAIN" ]; then
 else
   echo "${GREEN}Web UI: https://$(hostname -I | awk '{print $1}')${NC}"
 fi
-echo "${GREEN}First login: username 'admin', password 'password' -- you'll be forced to set a real password and 2FA immediately.${NC}"
+case "$SEEDED" in
+  0) echo "${GREEN}First login: username 'administrator', password 'password' -- you'll be required to set a real password immediately.${NC}" ;;
+  3) echo "${YELLOW}Existing accounts were left untouched -- log in with your usual administrator credentials.${NC}" ;;
+  *) echo "${RED}Could not verify the administrator account (seed_admin.py exit $SEEDED). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $APP_HOME/c4raven-server && $FLASK_ENV poetry run python $APP_HOME/seed_admin.py\"${NC}" ;;
+esac

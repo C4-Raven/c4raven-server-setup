@@ -8,16 +8,15 @@ DB_NAME="raven"
 
 case "$1" in
   remove)
-    # Stop + disable the units this package shipped. Deliberately leaves
-    # /opt/raven, the database, and nginx configs in place -- `remove`
-    # (as opposed to `purge`) is expected to be reversible by reinstalling.
-    systemctl stop raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
-    systemctl disable raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+    # prerm already stopped + disabled the units (their files are gone by
+    # now); just make systemd forget them. Deliberately leaves /opt/raven,
+    # the database, and nginx configs in place -- `remove` (as opposed to
+    # `purge`) is expected to be reversible by reinstalling.
+    systemctl daemon-reload 2>/dev/null || true
     ;;
 
   purge)
-    systemctl stop raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
-    systemctl disable raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
 
     # Deliberately NOT done automatically: dropping the Postgres database,
     # deleting /opt/raven/data (certs, config, mediamtx recordings), or
@@ -27,7 +26,9 @@ case "$1" in
     cat << EOF
 
 c4raven-server has been removed, but its data was intentionally left in
-place. To fully wipe it:
+place. Note that nginx is still serving the raven_* sites (their files
+under /etc/nginx were written by postinst, not shipped by the package, so
+dpkg does not remove them). To fully wipe it:
 
     sudo systemctl stop postgresql
     sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;"

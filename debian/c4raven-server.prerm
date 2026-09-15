@@ -1,0 +1,19 @@
+#!/bin/bash
+# prerm for the c4raven-server .deb.
+#
+# Stop and disable the units while their files still exist (dpkg deletes
+# /lib/systemd/system/*.service before postrm runs, at which point
+# `systemctl disable` can no longer clean up the wants/ symlinks).
+set -e
+
+case "$1" in
+  remove|deconfigure)
+    systemctl stop raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+    systemctl disable raven cot_parser eud_handler eud_handler_ssl mediamtx 2>/dev/null || true
+    ;;
+
+  upgrade|failed-upgrade)
+    ;;
+esac
+
+exit 0

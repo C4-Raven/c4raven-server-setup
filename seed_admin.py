@@ -1,66 +1,110 @@
 """
-Raven server -- initial admin seed script.
+Raven server -- first-admin hardening script.
 
-Run this ONCE against a freshly migrated (empty) database to create the
-first administrator account. It refuses to run if any user already exists,
-so it is safe to keep in source control without risk of it being run
-against a live, populated database by mistake.
+The server creates its own first administrator the first time it starts
+against an empty database (see main() in raven/app.py): username
+`administrator`, password `password`, with NO forced password change. Both
+installers (install.sh and the .deb postinst) start the server before this
+script runs, because the database tables are only created by the
+migrations the server itself applies on startup -- so by the time this
+runs, that default account normally already exists.
 
-Creates:
-    username: admin
-    password: password
-    role:     administrator
-    force_password_change: True   -- the account is locked out of everything
-                                      except changing its password until a
-                                      real password is set, on first login.
+This script therefore does one of three things, and nothing else:
 
-Requires the force_password_change patch (custom column on the User model
-and the enforcement hook in app.py) to already be applied -- without it,
-create_user() below will raise a TypeError on the unexpected keyword.
+  * no users yet (server not started, or migrations ran without main()):
+      create `administrator` / `password` with force_password_change=True
+  * exactly one user, the server's default `administrator` still on the
+    default password and not yet forced to change it:
+      set force_password_change=True on it
+  * anything else (real accounts exist, or the default one is already
+    hardened):
+      leave the database alone and exit 3
 
-Usage (from the server, with the app's virtualenv active):
-    python3 seed_admin.py
+force_password_change locks the account out of everything except changing
+its own password until a real one is set (custom column on User plus the
+enforcement hook in app.py).
+
+Exit codes: 0 done, 2 database tables not ready (server not up yet),
+3 nothing to do. Never touches an existing, populated deployment.
+
+Usage (from the server checkout, with the app's virtualenv):
+    RAVEN_DATA_FOLDER=/opt/raven/data poetry run python seed_admin.py
 """
 
 import sys
+import time
 
 from raven.app import create_app
 
 app = create_app(cli=True)
 
-from raven.extensions import db
-from raven.models.role import Role
-from raven.models.user import User
-from flask_security import SQLAlchemyUserDatastore, hash_password
+from flask_security import SQLAlchemyUserDatastore, hash_password, verify_password  # noqa: E402
+from sqlalchemy.exc import OperationalError, ProgrammingError  # noqa: E402
 
-ADMIN_USERNAME = "admin"
+from raven.extensions import db  # noqa: E402
+from raven.models.role import Role  # noqa: E402
+from raven.models.user import User  # noqa: E402
+
+ADMIN_USERNAME = "administrator"  # must match what raven/app.py main() creates
 ADMIN_PASSWORD = "password"
+WAIT_SECONDS = 120
+
+
+def wait_for_tables():
+    """The migrations run inside the server on startup; poll until `user` exists."""
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        try:
+            return User.query.all()
+        except (ProgrammingError, OperationalError):
+            db.session.rollback()
+            if time.monotonic() > deadline:
+                print(
+                    f"Database tables still not present after {WAIT_SECONDS}s -- is the "
+                    "raven service running? Re-run this script once it is."
+                )
+                sys.exit(2)
+            time.sleep(2)
+
 
 with app.app_context():
-    existing_user_count = User.query.count()
-    if existing_user_count > 0:
-        print(
-            f"Refusing to run: {existing_user_count} user(s) already exist in "
-            "this database. This script is only for seeding a brand new, "
-            "empty deployment."
-        )
-        sys.exit(1)
-
+    users = wait_for_tables()
     datastore = SQLAlchemyUserDatastore(db, User, Role, None)
 
-    admin_role = datastore.find_role("administrator")
-    if not admin_role:
-        admin_role = datastore.create_role(name="administrator")
+    if not users:
+        admin_role = datastore.find_role("administrator")
+        if not admin_role:
+            admin_role = datastore.create_role(name="administrator", permissions={"administrator"})
+        datastore.create_user(
+            username=ADMIN_USERNAME,
+            email=None,
+            password=hash_password(ADMIN_PASSWORD),
+            active=True,
+            roles=[admin_role],
+            force_password_change=True,
+        )
+        db.session.commit()
+        print(f"Created admin account '{ADMIN_USERNAME}' with password '{ADMIN_PASSWORD}'.")
+        print("It must set a real password on first login before it can do anything else.")
+        sys.exit(0)
 
-    datastore.create_user(
-        username=ADMIN_USERNAME,
-        email=None,
-        password=hash_password(ADMIN_PASSWORD),
-        active=True,
-        roles=[admin_role],
-        force_password_change=True,
+    if len(users) == 1:
+        (user,) = users
+        if (
+            user.username == ADMIN_USERNAME
+            and not user.force_password_change
+            and verify_password(ADMIN_PASSWORD, user.password)
+        ):
+            user.force_password_change = True
+            db.session.commit()
+            print(
+                f"Server-created default account '{ADMIN_USERNAME}' (password "
+                f"'{ADMIN_PASSWORD}') is now required to set a real password on first login."
+            )
+            sys.exit(0)
+
+    print(
+        f"Nothing to do: {len(users)} account(s) already exist and none is the untouched "
+        "default -- leaving the database alone."
     )
-    db.session.commit()
-
-    print(f"Created admin account '{ADMIN_USERNAME}' with password '{ADMIN_PASSWORD}'.")
-    print("It will be forced to set a real password and 2FA on first login.")
+    sys.exit(3)
