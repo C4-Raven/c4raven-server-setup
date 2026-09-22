@@ -301,8 +301,10 @@ fi
 # understand its lockfile and will silently downgrade/corrupt it. `corepack
 # yarn` runs the pinned version directly without needing `corepack enable`
 # (which needs root to symlink into /usr/bin).
-run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn install"
-run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
+# COREPACK_ENABLE_DOWNLOAD_PROMPT=0: never stop to ask before downloading
+# the pinned yarn (a prompt here would read from the piped script).
+run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn install --immutable"
+run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn build"
 # Deploy as root, not as $APP_USER: whatever previously owned files are in
 # the webroot (a from-scratch install won't have any, but a re-run or a
 # webroot that predates this script easily can, e.g. www-data from a
@@ -322,15 +324,24 @@ sudo chown -R "$APP_USER:$APP_USER" "$WEBROOT"
 # RabbitMQ (before the Raven services start: they connect to it on boot)
 # ---------------------------------------------------------------------------
 echo "${GREEN}Configuring RabbitMQ...${NC}"
+# Enable the plugins BEFORE rabbitmq.conf mentions their settings (mqtt.*,
+# auth_http.*): RabbitMQ refuses to start on a setting it has no schema for
+# ("Conf file attempted to set unknown variable"), and with `set -e` that
+# failed restart used to end the whole install right here -- before the
+# raven services below were ever created, leaving a server nobody can log
+# in to. --offline works whether or not the broker is running.
+sudo rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
 sudo curl -fsSL "$REPO_RAW/rabbitmq.conf" -o /etc/rabbitmq/rabbitmq.conf
 
 RABBITMQ_VERSION=$(sudo rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
 if [ -n "$RABBITMQ_VERSION" ] && ! sudo grep -qs PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf; then
   echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" | sudo tee -a /etc/rabbitmq/rabbitmq-env.conf > /dev/null
 fi
-sudo systemctl restart rabbitmq-server
-sudo rabbitmq-plugins enable rabbitmq_mqtt rabbitmq_auth_backend_http || true
-sudo systemctl restart rabbitmq-server
+if ! sudo systemctl restart rabbitmq-server; then
+  sudo journalctl -u rabbitmq-server -n 40 --no-pager
+  echo "${RED}RabbitMQ would not start (log above). Fix that, then finish with c4raven-updater's finish-install.sh.${NC}"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Secrets env file + systemd units for the Raven services
