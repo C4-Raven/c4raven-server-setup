@@ -1,0 +1,39 @@
+# Rocky Linux 9 with a real systemd as PID 1.
+#
+# quay.io/rockylinux/rockylinux:9-ubi-init is Rocky's own systemd-enabled
+# image (the `-init` suffix means PID 1 is /sbin/init). Verified multi-arch:
+# the 9-ubi-init manifest list carries linux/amd64 and linux/arm64, so the
+# same Dockerfile builds both.
+#
+# As with the Ubuntu image, nothing the installer is meant to install is
+# pre-installed -- in particular NOT epel-release and NOT the PGDG repo.
+# Whether lib/distro.sh wires those up correctly is the thing under test.
+FROM quay.io/rockylinux/rockylinux:9-ubi-init
+
+ENV container=docker \
+    LANG=C.UTF-8
+
+# ubi-init ships microdnf on some builds and full dnf on others; normalise.
+RUN (command -v dnf >/dev/null 2>&1 || microdnf -y install dnf) \
+ && dnf -y install --setopt=install_weak_deps=False \
+      sudo shadow-utils util-linux procps-ng iproute hostname \
+      curl ca-certificates \
+ && dnf clean all
+
+RUN systemctl mask \
+      systemd-udevd.service systemd-udev-trigger.service \
+      systemd-udevd-kernel.socket systemd-udevd-control.socket \
+      systemd-modules-load.service \
+      systemd-journald-audit.socket \
+      sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
+      getty.target console-getty.service getty@tty1.service \
+      systemd-firstboot.service \
+ || true
+
+RUN useradd --create-home --shell /bin/bash tester \
+ && printf 'tester ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-tester \
+ && chmod 0440 /etc/sudoers.d/90-tester
+
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]

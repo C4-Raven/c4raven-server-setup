@@ -1,0 +1,187 @@
+name: Install matrix
+
+# Tier 2 of the verification harness: run the installer end to end inside a
+# systemd container on each {distro, arch, method} cell, then assert the
+# stack is actually serving (tests/verify.sh). See tests/README.md for what
+# each cell does and does not prove.
+#
+# Cost control:
+#   * push / pull_request -> amd64 only (native, fast-ish)
+#   * nightly / manual    -> the full cross product, arm64 included, on
+#                            GitHub's native arm64 runners (ubuntu-24.04-arm)
+#
+# arm64 runs natively. QEMU emulation is deliberately NOT used in CI: Node
+# and the Erlang JIT do not survive it reliably, so an emulated result is
+# not a signal. tests/run-matrix.sh --emulated exists for local smoke only.
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Which cells to run"
+        type: choice
+        default: full
+        options: [amd64-only, full]
+      offline:
+        description: "Also build and install the offline bundle (slow)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan the matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          scope="${{ github.event.inputs.scope || '' }}"
+          if [ -z "$scope" ]; then
+            case "${{ github.event_name }}" in
+              schedule) scope=full ;;
+              *)        scope=amd64-only ;;
+            esac
+          fi
+          echo "scope=$scope"
+
+          arches="amd64"
+          [ "$scope" = full ] && arches="amd64 arm64"
+
+          # ubuntu-24.04-arm: GitHub-hosted native arm64 Linux runner
+          # (Cobalt 100 / Neoverse N2, 4 vCPU). Standard label, GA for
+          # PUBLIC repositories since 2025-08-07 and free there with no
+          # minute charge -- which is the only reason this matrix can
+          # afford a nightly arm64 cross product.
+          #
+          # This label is free ONLY because C4-Raven/c4raven-server-setup
+          # is public. Arm64 standard runners are not available to private
+          # repositories on the Free plan: if this repo is ever made
+          # private, every arm64 cell below stops being scheduled and the
+          # job fails at queue time with a label-not-found error that says
+          # nothing about the cause. Switch to a paid plan's arm runners or
+          # drop back to amd64-only if that happens.
+          entries=""
+          for a in $arches; do
+            case "$a" in
+              amd64) runner=ubuntu-24.04 ;;
+              arm64) runner=ubuntu-24.04-arm ;;
+            esac
+            for d in ubuntu-24.04 rocky-9; do
+              case "$d" in
+                ubuntu-*) methods="install-sh deb" ;;
+                rocky-*)  methods="install-sh rpm" ;;
+              esac
+              for m in $methods; do
+                entries="$entries{\"distro\":\"$d\",\"arch\":\"$a\",\"method\":\"$m\",\"runner\":\"$runner\"},"
+              done
+            done
+          done
+          echo "matrix={\"include\":[${entries%,}]}" >> "$GITHUB_OUTPUT"
+
+  install:
+    name: ${{ matrix.distro }} / ${{ matrix.arch }} / ${{ matrix.method }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A full install builds a Poetry venv and a yarn bundle and pulls in
+      # Postgres, RabbitMQ and ffmpeg. The runners have ~14 GB of free disk;
+      # the preinstalled toolchains are worth more than that back.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Show environment
+        run: |
+          uname -m
+          docker --version
+          cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo "not cgroup v2"
+
+      - name: Run the cell
+        env:
+          # c4raven-server and c4raven-ui are private; every online install
+          # path clones them. Without this the cell SKIPs rather than fails.
+          GH_TOKEN: ${{ secrets.C4RAVEN_CI_TOKEN }}
+          PKG_VERSION: 0.0.0~ci
+          TIMEOUT_MIN: 70
+        run: |
+          tests/run-matrix.sh \
+            --distro "${{ matrix.distro }}" \
+            --arch   "${{ matrix.arch }}" \
+            --method "${{ matrix.method }}" \
+            --reboot-check
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.distro }}-${{ matrix.arch }}-${{ matrix.method }}
+          path: tests/.artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  offline:
+    name: offline bundle / amd64
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.offline == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h /
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build the offline bundle
+        env:
+          GH_TOKEN: ${{ secrets.C4RAVEN_CI_TOKEN }}
+          PKG_VERSION: 0.0.0
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apt-utils dpkg-dev ubuntu-keyring
+          corepack enable || true
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+          # One suite only in CI; the release build covers the rest.
+          SUITES=noble ./build-offline.sh
+
+      - name: Install it in a pristine container with no default route
+        run: |
+          bundle=$(ls build/c4raven-server-offline_*_noble_*.tar | head -1)
+          tests/run-matrix.sh --distro ubuntu-24.04 --arch amd64 \
+                              --method deb-offline --bundle "$bundle"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-offline-amd64
+          path: tests/.artifacts/
+          if-no-files-found: ignore

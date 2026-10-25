@@ -1,3 +1,28 @@
+# Everything above the "Package:" line below is dropped by build-deb.sh, which
+# builds DEBIAN/control by hand (no dpkg-buildpackage here), so this note is a
+# safe place for it:
+#
+#   !! EDITING THE END OF THIS FILE: READ THIS FIRST !!
+#
+#   build-deb.sh's offline rewrite (OFFLINE_PAYLOAD set) drops every line
+#   from " Building the UI needs" to END OF FILE and appends its own closing
+#   Description paragraph. Two rules follow, and build-deb.sh enforces both
+#   -- neither fails silently, but neither is obvious from reading this file
+#   alone:
+#
+#     1. That marker line's exact wording is grepped for. Reword it and the
+#        offline build aborts (rather than shipping a description claiming
+#        the package is Architecture: all and wants Node.js from NodeSource).
+#
+#     2. Everything below the marker must be Description continuation prose
+#        -- a leading space, including the " ." separators. A control FIELD
+#        or a new stanza put down there would be deleted from the offline
+#        package, so build-deb.sh refuses to build instead.
+#
+#   Practical upshot: ONLINE-ONLY prose goes AT THE END, below the marker.
+#   Anything that is true of both builds -- fields, and prose -- goes ABOVE
+#   it. Prose above the marker is shipped verbatim in the offline package,
+#   so it must not describe how the online build works.
 Source: c4raven-server
 Maintainer: C4 Raven <support@c4raven.net>
 Standards-Version: 4.6.2
@@ -18,7 +43,6 @@ Depends: debconf (>= 0.5),
  build-essential,
  postgresql,
  postgresql-postgis,
- pgloader,
  rabbitmq-server,
  nginx,
  libnginx-mod-stream,
@@ -29,17 +53,30 @@ Depends: debconf (>= 0.5),
  rsync
 Description: C4 Raven TAK server -- full stack, single package
  A security-hardened fork of the upstream project this is derived from.
- This package installs the whole server: the Raven backend (cloned and built
- with Poetry on first install), the C4 Raven UI frontend (built with
- Yarn and deployed to nginx's webroot), a dedicated certificate
- authority, mediamtx for video streaming, and the systemd units that
- tie it all together.
+ This package installs the whole server: the Raven backend, the C4 Raven UI
+ frontend served from nginx's webroot, a dedicated certificate authority,
+ mediamtx for video streaming, and the systemd units that tie it all
+ together.
  .
  Postgres, RabbitMQ, and nginx are pulled in as real package
  dependencies; everything specific to this app (the venv, the CA, the
  first admin account) is set up by this package's postinst script,
- which mirrors the previous curl|bash installer step for step.
+ which mirrors the previous curl|bash installer step for step. That
+ includes opening the web, media and EUD ports if a firewall is already
+ running; set RAVEN_OPEN_FIREWALL=false to skip it. No firewall that is
+ switched off is ever switched on.
  .
- Building the UI needs Node.js 20.19 or newer, which Ubuntu 24.04's own
- nodejs package (18.x) does not satisfy: install Node 22 from NodeSource
- (https://deb.nodesource.com) first on such systems.
+ Building the UI needs Node.js 20.19 or newer. Ubuntu 24.04's own nodejs
+ package is 18.x and does not satisfy that; 25.10 and 26.04 ship 20.19 or
+ newer and do. On 24.04, install Node 22 from NodeSource
+ (https://deb.nodesource.com, setup_22.x -- it publishes both amd64 and
+ arm64) before this package.
+ .
+ The package is Architecture: all and builds everything on the target, so
+ it installs on arm64 as well as amd64; every dependency above exists on
+ both in Ubuntu. The offline build is a different story -- it carries
+ prebuilt binaries, so it is built once per architecture.
+ .
+ The backend is cloned from GitHub and built with Poetry on first install,
+ and the UI is built with Yarn on the target; both are pinned to the exact
+ commits this package version was built against.

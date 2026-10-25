@@ -24,6 +24,13 @@ if [ "$(whoami)" == "root" ] || [ "$(whoami)" == "$APP_USER" ]; then
   exit 1
 fi
 
+# The offline .deb installs a plain venv (/opt/raven/venv) and no source
+# checkout; it's upgraded by installing a newer offline bundle, not by pulling.
+if sudo test -L "$APP_HOME/venv"; then
+  echo "${RED}This server was installed from the offline package. To update it, run install.sh from a newer c4raven-server-offline bundle (or sudo apt install ./c4raven-server_<version>_amd64.deb).${NC}"
+  exit 1
+fi
+
 if ! sudo test -d "$APP_HOME/c4raven-server"; then
   echo "${RED}No existing install found at $APP_HOME/c4raven-server. Run install.sh first.${NC}"
   exit 1
@@ -68,6 +75,13 @@ if sudo test -d "$APP_HOME/c4raven-ui"; then
   # anything has left it non-writable by its own uid/gid.
   sudo rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete "$APP_HOME/c4raven-ui/dist/" "$WEBROOT/"
   sudo chown -R "$APP_USER:$APP_USER" "$WEBROOT"
+  # Relabel for SELinux: rsync creates every file fresh, and a file born under
+  # /var/www inherits var_t rather than the httpd_sys_content_t the policy maps
+  # it to, so nginx 403s the whole UI after an otherwise clean update. install.sh
+  # and the RPM's configure.sh both relabel right after this same rsync; without
+  # it here, updating an EL box breaks the UI every single time. No-op on
+  # Debian/Ubuntu, where restorecon doesn't exist.
+  command -v restorecon >/dev/null 2>&1 && sudo restorecon -RF "$WEBROOT" >/dev/null 2>&1
   echo "${GREEN}Frontend updated and deployed.${NC}"
 else
   echo "${YELLOW}No $APP_HOME/c4raven-ui checkout found -- skipping frontend update.${NC}"

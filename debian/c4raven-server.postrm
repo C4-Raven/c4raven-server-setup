@@ -30,7 +30,6 @@ place. Note that nginx is still serving the raven_* sites (their files
 under /etc/nginx were written by postinst, not shipped by the package, so
 dpkg does not remove them). To fully wipe it:
 
-    sudo systemctl stop postgresql
     sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;"
     sudo -u postgres psql -c "DROP ROLE IF EXISTS $DB_NAME;"
     sudo rm -rf $APP_HOME

@@ -1,0 +1,49 @@
+#!/bin/bash
+# c4raven-setup -- (re-)run the c4raven-server configuration.
+#
+# The RPM's stand-in for `dpkg-reconfigure c4raven-server`. Edit
+# /etc/c4raven-server/setup.conf (or set the same RAVEN_* variables in the
+# environment) and run this. It is the exact code %post runs, and it is safe to
+# run repeatedly.
+set -euo pipefail
+
+CONF_FILE=/etc/c4raven-server/setup.conf
+WORKER=/usr/libexec/c4raven-server/configure.sh
+
+usage() {
+  cat << EOF
+Usage: c4raven-setup [options]
+
+  --edit        open $CONF_FILE in \$EDITOR first, then apply it
+  --show        print the current answers and exit (secrets masked)
+  -h, --help    this message
+
+With no options, applies the answers already in $CONF_FILE
+and the environment. Any RAVEN_* variable set in the environment overrides the
+file, e.g.:
+
+  sudo RAVEN_DOMAIN=tak.example.org c4raven-setup
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  --show)
+    [ -f "$CONF_FILE" ] || { echo "$CONF_FILE does not exist." >&2; exit 1; }
+    sed -E 's/^([[:space:]]*RAVEN_TURNSTILE_SECRET_KEY=)(.+)$/\1<set>/' "$CONF_FILE"
+    exit 0
+    ;;
+  --edit)
+    [ "$(id -u)" -eq 0 ] || { echo "c4raven-setup --edit must run as root." >&2; exit 1; }
+    "${EDITOR:-vi}" "$CONF_FILE"
+    ;;
+  "") ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+if [ ! -x "$WORKER" ]; then
+  echo "$WORKER is missing -- is c4raven-server installed?" >&2
+  exit 1
+fi
+
+exec "$WORKER"

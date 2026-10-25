@@ -1,0 +1,47 @@
+# Ubuntu 24.04 with a real systemd as PID 1.
+#
+# Deliberately minimal: this image provides only what a stock Ubuntu Server
+# cloud image already has (systemd, dbus, sudo, curl, iproute2) plus the pty
+# helper the harness needs to drive install.sh's interactive prompts.
+# Anything the installer is supposed to install is NOT pre-installed here --
+# pre-installing it would hide a missing Depends, which is one of the exact
+# regressions this harness exists to catch.
+#
+# Multi-arch: ubuntu:24.04 has linux/amd64 and linux/arm64 manifests, so the
+# same Dockerfile builds both; --platform is passed at build time.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    container=docker \
+    LANG=C.UTF-8
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      systemd systemd-sysv dbus dbus-user-session \
+      sudo ca-certificates curl iproute2 procps util-linux bsdextrautils \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Units that need hardware, a real kernel log, or a console the container
+# does not have. Left unmasked they fail at boot and poison `systemctl
+# is-system-running`, which the harness reads as a signal.
+RUN systemctl mask \
+      systemd-udevd.service systemd-udev-trigger.service \
+      systemd-udevd-kernel.socket systemd-udevd-control.socket \
+      systemd-modules-load.service \
+      systemd-journald-audit.socket \
+      sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
+      getty.target console-getty.service getty@tty1.service \
+      systemd-firstboot.service
+
+# install.sh refuses to run as root or as `raven`; it wants an ordinary
+# sudo-capable account, exactly like the human it was written for.
+RUN useradd --create-home --shell /bin/bash tester \
+ && printf 'tester ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-tester \
+ && chmod 0440 /etc/sudoers.d/90-tester
+
+# SIGRTMIN+3 is systemd's "shut down cleanly"; without it `docker stop`
+# sends SIGTERM, which systemd interprets as "reexec" and the container
+# hangs for the full stop timeout on every teardown.
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]

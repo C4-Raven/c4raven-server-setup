@@ -15,11 +15,31 @@ DATA_DIR="$APP_HOME/data"
 DB_NAME="raven"
 WEBROOT="/var/www/html/raven"
 PKGDATA="/usr/share/c4raven-server"
+# Present only in the offline build (build-offline.sh): prebuilt backend
+# wheels, the built UI, mediamtx and the ATAK plugin. When it exists, every
+# step below installs from it instead of reaching out to GitHub/PyPI/npm.
+OFFLINE_DIR="$PKGDATA/offline"
+FLASK_ENV="FLASK_APP=raven.app RAVEN_DATA_FOLDER='$DATA_DIR'"
 
 # runuser (util-linux, essential) rather than sudo: we're already root here
 # and sudo isn't guaranteed to exist on a minimal image.
 run_as_app() {
   runuser -u "$APP_USER" -- bash -lc "$1"
+}
+
+offline() {
+  [ -d "$OFFLINE_DIR" ]
+}
+
+# Run a command from the backend's environment as the app user: the Poetry
+# venv of the source checkout (online build) or the plain venv (offline).
+# $1 is one shell word list, e.g. "flask raven create-ca".
+raven_exec() {
+  if offline; then
+    run_as_app "cd '$DATA_DIR' && $FLASK_ENV '$APP_HOME/venv/bin/'$1"
+  else
+    run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run $1"
+  fi
 }
 
 node_ok() {
@@ -45,24 +65,45 @@ case "$1" in
     # specific, reproducible version instead.
     # -------------------------------------------------------------------
     echo "Installing the Raven backend..."
-    if [ ! -d "$APP_HOME/c4raven-server" ]; then
-      run_as_app "git clone https://github.com/C4-Raven/c4raven-server.git '$APP_HOME/c4raven-server'"
-    fi
-    if [ -f "$PKGDATA/SERVER_SHA" ]; then
-      SERVER_SHA=$(cat "$PKGDATA/SERVER_SHA")
-      # raven/__init__.py is a version stamp poetry-dynamic-versioning rewrites
-      # on every install; discard it first or git refuses to switch commits.
-      run_as_app "cd '$APP_HOME/c4raven-server' && git checkout -- raven/__init__.py 2>/dev/null; git fetch origin && git checkout '$SERVER_SHA'"
+    if offline; then
+      # Fresh venv per install, then an atomic symlink swap: the running
+      # services keep their old venv until they're restarted further down,
+      # and a failed install leaves the working one in place. The old venv
+      # is only deleted once the new services are up (end of this script).
+      PYTAG=$(python3 -c 'import sys; print("cp%d%d" % sys.version_info[:2])')
+      WHEELS="$OFFLINE_DIR/wheelhouse"
+      if [ ! -d "$WHEELS/$PYTAG" ]; then
+        echo "This package bundles backend wheels for: $(cd "$WHEELS" && ls -d cp* | tr '\n' ' ')" >&2
+        echo "but this system's python3 is $PYTAG. Use the offline bundle built for this Ubuntu release." >&2
+        exit 1
+      fi
+      NEW_VENV="$APP_HOME/venvs/$(cat "$OFFLINE_DIR/VERSION")-$(date +%Y%m%d%H%M%S)"
+      run_as_app "mkdir -p '$APP_HOME/venvs' && python3 -m venv '$NEW_VENV'"
+      PIP="PIP_CONFIG_FILE=/dev/null PIP_DISABLE_PIP_VERSION_CHECK=1 '$NEW_VENV/bin/pip' install --quiet --no-index"
+      run_as_app "$PIP --find-links '$WHEELS/$PYTAG' --find-links '$WHEELS/common' -r '$OFFLINE_DIR/requirements.txt'"
+      run_as_app "$PIP --no-deps '$WHEELS'/common/raven-*.whl"
+      ln -sfn "$NEW_VENV" "$APP_HOME/venv.new"
+      chown -h "$APP_USER:$APP_USER" "$APP_HOME/venv.new"
+      mv -T "$APP_HOME/venv.new" "$APP_HOME/venv"
+    else
+      if [ ! -d "$APP_HOME/c4raven-server" ]; then
+        run_as_app "git clone https://github.com/C4-Raven/c4raven-server.git '$APP_HOME/c4raven-server'"
+      fi
+      if [ -f "$PKGDATA/SERVER_SHA" ]; then
+        SERVER_SHA=$(cat "$PKGDATA/SERVER_SHA")
+        # raven/__init__.py is a version stamp poetry-dynamic-versioning rewrites
+        # on every install; discard it first or git refuses to switch commits.
+        run_as_app "cd '$APP_HOME/c4raven-server' && git checkout -- raven/__init__.py 2>/dev/null; git fetch origin && git checkout '$SERVER_SHA'"
+      fi
+
+      if ! run_as_app "test -x '$APP_HOME/.local/bin/poetry'"; then
+        run_as_app "curl -sSL https://install.python-poetry.org | python3 -"
+      fi
+      run_as_app "poetry config virtualenvs.in-project true"
+      run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
     fi
 
-    if ! run_as_app "test -x '$APP_HOME/.local/bin/poetry'"; then
-      run_as_app "curl -sSL https://install.python-poetry.org | python3 -"
-    fi
-    run_as_app "poetry config virtualenvs.in-project true"
-    run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
-
-    FLASK_ENV="FLASK_APP=raven.app RAVEN_DATA_FOLDER='$DATA_DIR'"
-    run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven generate-config"
+    raven_exec "flask raven generate-config"
     echo "Raven backend installed."
 
     # -------------------------------------------------------------------
@@ -139,7 +180,7 @@ PYEOF"
     # Certificate authority
     # -------------------------------------------------------------------
     echo "Creating the certificate authority..."
-    run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven create-ca"
+    raven_exec "flask raven create-ca"
     # Unlike create-ca, issue-server-certificate is NOT idempotent -- it
     # unconditionally wipes and regenerates certs/raven/ if it already
     # exists (CertificateAuthority.issue_certificate() does an
@@ -149,7 +190,7 @@ PYEOF"
     # silently reissuing (and invalidating) the server's TLS cert on
     # every `apt upgrade`.
     if [ ! -f "$DATA_DIR/ca/certs/raven/raven.pem" ]; then
-      run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven issue-server-certificate"
+      raven_exec "flask raven issue-server-certificate"
     fi
 
     # -------------------------------------------------------------------
@@ -157,14 +198,54 @@ PYEOF"
     # -------------------------------------------------------------------
     echo "Installing mediamtx..."
     run_as_app "mkdir -p '$DATA_DIR/mediamtx/recordings'"
-    if [ ! -f "$DATA_DIR/mediamtx/mediamtx" ]; then
+    # mediamtx publishes one release tarball per CPU architecture
+    # (mediamtx_v<ver>_linux_{amd64,arm64,armv6,armv7}.tar.gz) -- both the
+    # offline payload and the online download have to pick the right one.
+    # The old `*) MTX_ARCH=armv7` catch-all silently fetched a 32-bit ARM
+    # binary for anything that wasn't x86_64/aarch64 (riscv64, ppc64el, s390x),
+    # which installs fine and then dies with "Exec format error" at first
+    # boot; fail here with a readable message instead.
+    #
+    # Keyed on the dpkg architecture, NOT `uname -m`: inside a maintainer
+    # script dpkg's answer is the authoritative one and uname's is not. A
+    # 32-bit armhf userland on a 64-bit kernel (the common Raspberry Pi OS
+    # layout) reports `aarch64`, which would pick the arm64 build -- an
+    # unrunnable binary online, and offline a spurious "wrong bundle for this
+    # architecture" abort on a correctly matched armhf bundle. Using dpkg's
+    # names also makes this map character-for-character the same as the one
+    # in build-deb.sh, which reads them out of the payload MANIFEST.
+    DPKG_ARCH=$(dpkg --print-architecture)
+    case "$DPKG_ARCH" in
+      amd64) MTX_ARCH=amd64 ;;
+      arm64) MTX_ARCH=arm64 ;;
+      armhf) MTX_ARCH=armv7 ;;
+      armel) MTX_ARCH=armv6 ;;
+      *)
+        echo "mediamtx publishes no Linux build for $DPKG_ARCH -- video streaming" >&2
+        echo "cannot be installed on this architecture." >&2
+        exit 1
+        ;;
+    esac
+    if offline; then
+      # Always re-extract: a newer package may bundle a newer mediamtx.
+      #
+      # The payload only carries its own architecture's tarball, and the
+      # offline .deb is Architecture: amd64/arm64 for exactly that reason,
+      # so dpkg already refuses the wrong one. Check anyway: with
+      # --force-architecture the glob would stay unexpanded and tar would
+      # fail on a filename with a literal '*' in it.
+      shopt -s nullglob
+      MTX_TARBALLS=("$OFFLINE_DIR"/mediamtx/mediamtx_*_linux_"$MTX_ARCH".tar.gz)
+      shopt -u nullglob
+      if [ ${#MTX_TARBALLS[@]} -eq 0 ]; then
+        echo "This package bundles mediamtx for: $(cd "$OFFLINE_DIR/mediamtx" && ls mediamtx_*_linux_*.tar.gz | sed 's/.*_linux_//;s/\.tar\.gz//' | tr '\n' ' ')" >&2
+        echo "but this system is $DPKG_ARCH ($MTX_ARCH). Use the offline bundle built for this architecture." >&2
+        exit 1
+      fi
+      run_as_app "tar -xzf '${MTX_TARBALLS[0]}' -C '$DATA_DIR/mediamtx' mediamtx LICENSE"
+    elif [ ! -f "$DATA_DIR/mediamtx/mediamtx" ]; then
       # lastversion is one of the backend's own dependencies, so it's in the
       # Poetry venv already; run it from there (`poetry run` needs the cwd).
-      case "$(uname -m)" in
-        x86_64)  MTX_ARCH=amd64 ;;
-        aarch64) MTX_ARCH=arm64 ;;
-        *)       MTX_ARCH=armv7 ;;
-      esac
       run_as_app "cd '$APP_HOME/c4raven-server' && poetry run lastversion --filter '~*linux_$MTX_ARCH' --only 1.13.0 -o '$DATA_DIR/mediamtx/mediamtx.tar.gz' --assets download bluenviron/mediamtx"
       run_as_app "cd '$DATA_DIR/mediamtx' && tar -xf mediamtx.tar.gz && rm -f mediamtx.tar.gz"
     fi
@@ -218,6 +299,57 @@ stream {
     # otherwise swap out the served JavaScript.
     install -d -o "$APP_USER" -g "$APP_USER" -m 755 "$WEBROOT"
 
+    # -------------------------------------------------------------------
+    # Firewall
+    #
+    # The same port list, through the same shim, as install.sh and
+    # rpm/configure.sh. All three install paths have to agree: the .deb
+    # used to open nothing, so on an Ubuntu box whose admin had enabled
+    # ufw it came up green in the web UI with every EUD and media port
+    # shut and no ATAK client able to connect.
+    #
+    # This is not as invasive as it reads. firewall_open() is a no-op
+    # unless a firewall is actually RUNNING -- Ubuntu ships ufw installed
+    # but inactive, so the ordinary install changes nothing -- it only
+    # ever ADDS allow rules, and it never enables a firewall that is off.
+    #
+    # Sourced in a SUBSHELL deliberately: lib/distro.sh defines its own
+    # node_ok(), which sourced at this scope would silently replace the
+    # Node-version check above. firewall_open only runs external commands,
+    # so it loses nothing by running in a subshell.
+    #
+    # Failure here warns rather than aborts: leaving the package
+    # half-configured is worse than leaving a port shut, and the message
+    # tells the admin exactly what to run.
+    # -------------------------------------------------------------------
+    # nginx: web UI (80/443), the insecure Marti listener (8080), the
+    # client-cert-verified Marti listener (8443), certificate enrollment
+    # (8446), and the TLS stream proxies (RTSPS 8322, RTMPS 1936, MQTTS
+    # 8883). Then mediamtx's own plaintext ingest and media paths (RTSP
+    # 8554, RTMP 1935, WebRTC ICE 8189/udp, SRT 8890/udp) -- its HLS
+    # (8888) and WebRTC HTTP (8889) stay shut, nginx only reaches those on
+    # 127.0.0.1. Finally the EUD ports: eud_handler/eud_handler_ssl bind
+    # 8087/udp, 8088/tcp and 8089/tcp directly rather than through nginx,
+    # so they are invisible if you derive this list from nginx_configs/.
+    RAVEN_PORTS=(80/tcp 443/tcp 8080/tcp 8443/tcp 8446/tcp 8322/tcp 1936/tcp 8883/tcp
+                 8554/tcp 1935/tcp 8189/udp 8890/udp
+                 8088/tcp 8089/tcp 8087/udp)
+    OPEN_FW="${RAVEN_OPEN_FIREWALL:-true}"
+    if [ "${OPEN_FW,,}" != "true" ]; then
+      echo "RAVEN_OPEN_FIREWALL=$OPEN_FW -- leaving the firewall alone."
+    elif [ -r "$PKGDATA/lib/distro.sh" ]; then
+      echo "Opening firewall ports (no effect unless a firewall is running)..."
+      # shellcheck source=/dev/null
+      if ! ( . "$PKGDATA/lib/distro.sh" && firewall_open "${RAVEN_PORTS[@]}" ); then
+        echo "warning: opening the firewall ports failed. If this host runs ufw or" >&2
+        echo "         firewalld, run: for p in ${RAVEN_PORTS[*]}; do sudo ufw allow \$p; done" >&2
+      fi
+    else
+      echo "warning: $PKGDATA/lib/distro.sh is missing, so no firewall ports were" >&2
+      echo "         opened. If this host runs ufw or firewalld, run:" >&2
+      echo "         for p in ${RAVEN_PORTS[*]}; do sudo ufw allow \$p; done" >&2
+    fi
+
     systemctl enable nginx
     systemctl restart nginx
 
@@ -230,6 +362,12 @@ stream {
     # -------------------------------------------------------------------
     # Frontend
     # -------------------------------------------------------------------
+    if offline; then
+      echo "Deploying the bundled C4 Raven UI frontend..."
+      install -d -o "$APP_USER" -g "$APP_USER" -m 755 "$WEBROOT"
+      rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete "$OFFLINE_DIR/ui/" "$WEBROOT/"
+      chown -R "$APP_USER:$APP_USER" "$WEBROOT"
+    else
     echo "Building and deploying the C4 Raven UI frontend..."
     if [ ! -d "$APP_HOME/c4raven-ui" ]; then
       run_as_app "git clone https://github.com/C4-Raven/c4raven-ui.git '$APP_HOME/c4raven-ui'"
@@ -262,19 +400,21 @@ stream {
     # of prior ownership.
     rsync -a --no-perms --no-owner --no-group --omit-dir-times --delete "$APP_HOME/c4raven-ui/dist/" "$WEBROOT/"
     chown -R "$APP_USER:$APP_USER" "$WEBROOT"
+    fi
 
     # -------------------------------------------------------------------
     # RabbitMQ (before the Raven services start: they connect to it on boot)
     # -------------------------------------------------------------------
     echo "Configuring RabbitMQ..."
+    # Plugins first: RabbitMQ refuses to start on mqtt.*/auth_http.* settings
+    # whose plugins aren't enabled yet.
+    rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
     install -m 644 "$PKGDATA/rabbitmq.conf" /etc/rabbitmq/rabbitmq.conf
 
     RABBITMQ_VERSION=$(rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
     if [ -n "$RABBITMQ_VERSION" ] && ! grep -q PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf 2>/dev/null; then
       echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" >> /etc/rabbitmq/rabbitmq-env.conf
     fi
-    systemctl restart rabbitmq-server
-    rabbitmq-plugins enable rabbitmq_mqtt rabbitmq_auth_backend_http || true
     systemctl restart rabbitmq-server
 
     # -------------------------------------------------------------------
@@ -330,7 +470,33 @@ EOF
     # -------------------------------------------------------------------
     echo "Hardening the first administrator account..."
     SEEDED=0
-    run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run python '$PKGDATA/seed_admin.py'" || SEEDED=$?
+    raven_exec "python '$PKGDATA/seed_admin.py'" || SEEDED=$?
+
+    # -------------------------------------------------------------------
+    # Bundled ATAK plugin(s) (offline build): publish into the package repo
+    # so enrolling devices are offered them. Never downgrades a newer APK
+    # someone already uploaded; exit 3 = already published.
+    # -------------------------------------------------------------------
+    if offline; then
+      for apk in "$OFFLINE_DIR"/plugins/*.apk; do
+        [ -f "$apk" ] || continue
+        echo "Publishing $(basename "$apk") to the ATAK package repository..."
+        PUBLISHED=0
+        raven_exec "python '$PKGDATA/seed_plugin.py' '$apk'" || PUBLISHED=$?
+        case "$PUBLISHED" in
+          0|3) ;;
+          *) echo "Could not publish $(basename "$apk") (seed_plugin.py exit $PUBLISHED). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $DATA_DIR && $FLASK_ENV $APP_HOME/venv/bin/python $PKGDATA/seed_plugin.py $apk\"" ;;
+        esac
+      done
+
+      # The new services are running from the new venv; drop older ones.
+      CURRENT_VENV=$(readlink -f "$APP_HOME/venv")
+      for d in "$APP_HOME"/venvs/*; do
+        if [ -d "$d" ] && [ "$(readlink -f "$d")" != "$CURRENT_VENV" ]; then
+          rm -rf "$d"
+        fi
+      done
+    fi
 
     echo
     echo "Setup complete."
@@ -342,7 +508,13 @@ EOF
     case "$SEEDED" in
       0) echo "First login: username 'administrator', password 'password' -- you'll be required to set a real password immediately." ;;
       3) echo "Existing accounts were left untouched -- log in with your usual administrator credentials." ;;
-      *) echo "Could not verify the administrator account (seed_admin.py exit $SEEDED). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $APP_HOME/c4raven-server && $FLASK_ENV poetry run python $PKGDATA/seed_admin.py\"" ;;
+      *)
+        if offline; then
+          echo "Could not verify the administrator account (seed_admin.py exit $SEEDED). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $DATA_DIR && $FLASK_ENV $APP_HOME/venv/bin/python $PKGDATA/seed_admin.py\""
+        else
+          echo "Could not verify the administrator account (seed_admin.py exit $SEEDED). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $APP_HOME/c4raven-server && $FLASK_ENV poetry run python $PKGDATA/seed_admin.py\""
+        fi
+        ;;
     esac
     ;;
 

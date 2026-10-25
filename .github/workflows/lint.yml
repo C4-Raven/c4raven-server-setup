@@ -1,0 +1,94 @@
+name: Lint
+
+# Tier 1 of the verification harness: static checks only. No containers, no
+# privileged anything, under a minute. This is the tier that catches most
+# regressions in this repo for near-zero cost, so it runs on everything.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: Shell, Python, YAML, units
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck 0.9.0, rpm 4.18 and python3 are all preinstalled on the
+      # ubuntu-24.04 runner image; PyYAML is the only gap.
+      - name: Install the one thing the image lacks
+        run: python3 -m pip install --quiet --break-system-packages pyyaml
+
+      - name: Report tool versions
+        run: |
+          shellcheck --version | sed -n '2p'
+          rpmspec --version || true
+          systemd-analyze --version | head -1
+
+      # STRICT=1: a linter that is quietly absent in CI is worse than no
+      # linter, so missing tools fail the job instead of printing SKIP.
+      - name: tests/lint.sh
+        run: STRICT=1 tests/lint.sh
+
+      # Tier 1b. Container-free, ~1s: lib/distro.sh's package lists, nginx
+      # paths, PYTHON_BIN and arch mappings for every {distro, arch} the port
+      # targets, plus the packaging guards (cross-build refusal, MANIFEST
+      # arch, debian/control paragraph ordering). STRICT=1 so that a test
+      # file skipping because its subject vanished is a failure here, even
+      # though it is only a warning locally.
+      - name: tests/unit/run.sh
+        run: STRICT=1 tests/unit/run.sh
+
+  spec:
+    name: RPM spec (Rocky 9 macros)
+    runs-on: ubuntu-24.04
+    # rpmspec on the Debian rpm build expands most things correctly, but the
+    # %systemd_* and %{?dist} macros that a Rocky spec leans on only exist on
+    # the real thing. This job is a bare dnf container -- no systemd, no
+    # privileges, a few seconds.
+    container: quay.io/rockylinux/rockylinux:9
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is there a spec yet?
+        id: have
+        run: |
+          if ls rpm/*.spec >/dev/null 2>&1; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::rpm/*.spec does not exist yet -- skipping the spec checks."
+          fi
+
+      - name: Install rpm tooling
+        if: steps.have.outputs.yes == 'true'
+        run: dnf -y install rpm-build rpmlint systemd-rpm-macros
+
+      - name: rpmspec --parse (both architectures)
+        if: steps.have.outputs.yes == 'true'
+        run: |
+          fail=0
+          for s in rpm/*.spec; do
+            for a in x86_64 aarch64; do
+              echo "== $s ($a)"
+              rpmspec --target "$a" --parse "$s" >/dev/null || fail=1
+              # Every BuildRequires/Requires must at least be a resolvable
+              # name on Rocky 9; a Debian package name left in the spec is
+              # the single most likely porting mistake.
+              rpmspec --target "$a" -q --requires "$s" | sed 's/^/   requires: /'
+            done
+          done
+          exit $fail
+
+      - name: rpmlint
+        if: steps.have.outputs.yes == 'true'
+        continue-on-error: true
+        run: rpmlint rpm/*.spec
