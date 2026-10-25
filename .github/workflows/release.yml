@@ -21,7 +21,13 @@ jobs:
       - name: Build .deb
         env:
           PKG_VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.C4RAVEN_CI_TOKEN }}
         run: |
+          # build-deb.sh resolves the pinned commits with git ls-remote
+          # against the private c4raven-server / c4raven-ui repos.
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
           ./build-deb.sh | tee build.log
           # Record which backend/frontend commits this release pins, so
           # nobody has to unpack the .deb to find out.

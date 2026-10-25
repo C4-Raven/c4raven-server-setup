@@ -185,7 +185,7 @@ run_cell() {
   timeout "${TIMEOUT_MIN}m" \
     "$ENGINE" exec \
       --env "DISTRO=$distro" --env "ARCH=$arch" --env REPO=/opt/harness/repo \
-      --env "PKG_VERSION=${PKG_VERSION:-0.0.0}" \
+      --env "PKG_VERSION=${PKG_VERSION:-0.0.0}" --env GIT_TERMINAL_PROMPT=0 \
       --env "SERVER_SHA=${SERVER_SHA:-}" --env "UI_SHA=${UI_SHA:-}" \
       "${bundle_env[@]}" \
       "$name" bash "/opt/harness/repo/tests/methods/$method.sh" \
@@ -289,4 +289,10 @@ for r in "${RESULTS[@]}"; do
 done
 printf '\n%d passed, %d failed, %d skipped. Logs: %s\n' "$npass" "$nfail" "$nskip" "$ARTIFACTS"
 [ "$nfail" -eq 0 ] || exit 1
-[ "$npass" -gt 0 ] || { warn "every cell was skipped -- nothing was actually verified"; exit 0; }
+# REQUIRE_PASS=1 (CI, when it has the token) makes that a failure instead:
+# a job that verified nothing must not show green.
+[ "$npass" -gt 0 ] || {
+  warn "every cell was skipped -- nothing was actually verified"
+  [ -n "${REQUIRE_PASS:-}" ] && exit 1
+  exit 0
+}

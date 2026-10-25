@@ -1,3 +1,5 @@
+# shellcheck shell=sh
+# shellcheck disable=SC2034  # sourced: these are used by install.sh / update.sh
 # Falls back to no color (rather than crashing under `set -e`, which every
 # script sourcing this runs under) when there's no terminal to style for --
 # e.g. piped through something that doesn't allocate a tty.

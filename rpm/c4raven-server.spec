@@ -13,6 +13,9 @@
 
 %bcond_with offline
 
+# %%{_unitdir} comes from systemd-rpm-macros, which a Debian-hosted rpmbuild
+# (see build-rpm.sh) may not have; build-rpm.sh stages the units here.
+%{!?_unitdir:%global _unitdir /usr/lib/systemd/system}
 %global pkgdata    %{_datadir}/c4raven-server
 
 # The offline payload is prebuilt binaries: wheels (ELF .so inside), the
@@ -75,15 +78,13 @@ Requires:       libpq-devel
 Requires:       libffi-devel
 Requires:       openssl-devel
 %endif
-# Debian postgresql + postgresql-postgis. EL9 AppStream has no PostGIS at any
-# version (and neither does EPEL9); it exists only in PGDG, which would mean
-# replacing the distro PostgreSQL and taking a versioned `postgresql-16.service`
-# unit name with it. Nothing in the current schema uses PostGIS -- the one
+# Debian postgresql + postgresql-postgis. AppStream carries postgis (3.5.3,
+# x86_64 and aarch64), but nothing in the current schema uses it -- the one
 # migration that mentions it (8a43097881d7) was written without geoalchemy2 --
-# so the AppStream server is what we depend on and %post creates the extension
-# only if it happens to be available.
+# so it is a Recommends and the setup creates the extension when it is there.
 Requires:       postgresql-server
 Requires:       postgresql
+Recommends:     postgis
 Requires:       nginx
 # Debian: libnginx-mod-stream
 Requires:       nginx-mod-stream
@@ -113,10 +114,12 @@ Recommends:     ffmpeg-free
 %if %{without offline}
 Recommends:     nodejs >= 20.19
 %endif
-# semanage/restorecon for the SELinux fixups, and firewalld for the port
-# openings. Both are guarded in %post so the package still installs in a
-# container that has neither.
-Recommends:     policycoreutils-python-utils
+# semanage for the SELinux port labels: a hard Requires, because on an
+# enforcing box without it nginx cannot bind 8446/8322/1936/8883 and setup
+# stops at the nginx restart. It is in BaseOS/AppStream everywhere.
+Requires:       policycoreutils-python-utils
+# firewalld for the port openings; guarded in the setup so the package still
+# installs in a container without it.
 Recommends:     firewalld
 # `pgloader` from debian/control is a dead dependency and is deliberately not
 # carried over.
@@ -178,9 +181,13 @@ tar -xf %{SOURCE0} -C %{buildroot}
 %{pkgdata}
 
 %post
-# $1 == 1 on first install, 2+ on upgrade. Both reconfigure, exactly like the
-# .deb's `postinst configure` which runs on every upgrade too.
 systemctl daemon-reload >/dev/null 2>&1 || true
+
+%posttrans
+# Setup runs here, not in %post: rpm orders %post only after Requires, so
+# Recommends (nodejs, firewalld, postgis) may not be installed yet when %post
+# runs. %posttrans runs once the whole transaction is in. It runs on install
+# and upgrade alike, exactly like the .deb's `postinst configure`.
 if ! /usr/libexec/c4raven-server/configure.sh; then
     cat >&2 << 'EOF'
 
@@ -191,7 +198,7 @@ rolled back; fix the problem reported above and re-run:
 
 EOF
     # Deliberately not a failure: rpm has no `dpkg --configure -a` to resume a
-    # half-configured package, and failing %post would leave the package
+    # half-configured package, and failing here would leave the package
     # installed-but-broken with no supported way to retry. `c4raven-setup` is
     # that retry, and it is idempotent.
 fi
@@ -243,16 +250,17 @@ If you also want the EL-specific changes undone:
     sudo semanage port -d -t http_port_t -p tcp 1936
     sudo semanage port -d -t http_port_t -p tcp 8883
     sudo semanage fcontext -d '/opt/raven/data/ca(/.*)?'
-    for p in 80 443 8080 8443 8446 8322 1936 8883 8554 1935; do
+    for p in 80 443 8080 8443 8446 8322 1936 8883 8554 1935 8088 8089; do
         sudo firewall-cmd --permanent --remove-port=$p/tcp
     done
-    sudo firewall-cmd --permanent --remove-port=8189/udp
-    sudo firewall-cmd --permanent --remove-port=8890/udp
+    for p in 8189 8890 8087; do
+        sudo firewall-cmd --permanent --remove-port=$p/udp
+    done
     sudo firewall-cmd --reload
 
-The stock nginx default server and pg_hba.conf were backed up in place as
-/etc/nginx/nginx.conf.c4raven.bak and
-/var/lib/pgsql/data/pg_hba.conf.c4raven.bak.
+The stock nginx default server was backed up in place as
+/etc/nginx/nginx.conf.c4raven.bak. In /var/lib/pgsql/data/pg_hba.conf the
+127.0.0.1 and ::1 host lines were switched from ident to md5.
 
 EOF
 fi

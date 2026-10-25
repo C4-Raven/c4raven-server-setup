@@ -35,7 +35,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: install-matrix-${{ github.ref }}
+  # event_name keeps a push to main from cancelling the nightly full run.
+  group: install-matrix-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -122,8 +123,10 @@ jobs:
       - name: Run the cell
         env:
           # c4raven-server and c4raven-ui are private; every online install
-          # path clones them. Without this the cell SKIPs rather than fails.
+          # path clones them. Without the token a cell SKIPs; with it, a
+          # cell that still skipped is a failure (REQUIRE_PASS).
           GH_TOKEN: ${{ secrets.C4RAVEN_CI_TOKEN }}
+          REQUIRE_PASS: ${{ secrets.C4RAVEN_CI_TOKEN != '' && '1' || '' }}
           PKG_VERSION: 0.0.0~ci
           TIMEOUT_MIN: 70
         run: |
@@ -171,7 +174,8 @@ jobs:
             url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf \
             "https://github.com/"
           # One suite only in CI; the release build covers the rest.
-          SUITES=noble ./build-offline.sh
+          # The runner has only the system python3.12, and noble is 3.12.
+          SUITES=noble PY_VERSIONS=3.12 ./build-offline.sh
 
       - name: Install it in a pristine container with no default route
         run: |

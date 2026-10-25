@@ -52,6 +52,12 @@ for r in "${RPMS[@]}"; do
   esac
 done
 
+# The package Requires rabbitmq-server, certbot and nginx-mod-stream from
+# EPEL/CRB and rabbitmq.com, which the image deliberately lacks -- set them up
+# the way the docs tell users to, so this exercises that script too.
+say "configuring the EL9 repositories (rpm/c4raven-el9-repos.sh)"
+bash "$REPO/rpm/c4raven-el9-repos.sh" || exit 1
+
 say "installing the package"
 dnf -y install "${RPMS[@]}"
 rc=$?

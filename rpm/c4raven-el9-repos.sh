@@ -19,12 +19,10 @@
 #                       repository serves both architectures.
 #
 # NOT used, deliberately:
-#   PGDG (yum.postgresql.org) -- the only EL9 source of PostGIS, for either
-#       arch. Pulling it in means replacing the distro PostgreSQL and inheriting
-#       a versioned `postgresql-16.service` unit name. Nothing in the current
-#       schema uses PostGIS, so the package treats it as optional instead. If
-#       you do need it, install PGDG's postgresql16-server + postgis34_16 and
-#       set PG_SERVICE=postgresql-16 for the setup script.
+#   PGDG (yum.postgresql.org) -- AppStream already has postgis (3.5.3, both
+#       arches) for its PostgreSQL. PGDG would replace the distro PostgreSQL
+#       with a versioned `postgresql-16.service` that the setup script does
+#       not support.
 #   RPM Fusion -- carries a full `ffmpeg` 7.1.5 for el9 aarch64 and x86_64, but
 #       the only ffmpeg use in the server is a `-c:v copy -f rtsp` remux, which
 #       EPEL's ffmpeg-free does. Add RPM Fusion yourself if you want the
@@ -46,7 +44,15 @@ esac
 ARCH=$(uname -m)
 
 echo "Enabling EPEL 9 and CRB..."
-dnf -y install epel-release
+# dnf-plugins-core provides `dnf config-manager`; minimal images lack it,
+# and without it CRB silently stays off.
+if [ "$ID" = rhel ]; then
+  # RHEL's own repos don't carry epel-release; Fedora publishes it.
+  dnf -y install dnf-plugins-core \
+    https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+else
+  dnf -y install dnf-plugins-core epel-release
+fi
 # EPEL expects CodeReady Builder / PowerTools to be on. The repo id differs
 # between RHEL and the rebuilds.
 dnf config-manager --set-enabled crb 2>/dev/null \
@@ -62,16 +68,26 @@ echo "Adding the RabbitMQ repository..."
 #
 # RabbitMQ's own packages carry `Requires: erlang >= N, erlang < M`:
 #
-#   erlang >=26 <29  -> newest rabbitmq-server 4.3.2
-#   erlang >=27 <30  -> newest rabbitmq-server 4.4.0
+#   4.3.0-4.3.2  erlang >=26 <29
+#   4.3.3-4.3.x  erlang >=27 <29
+#   4.4.0        erlang >=27 <30
 #
-# So on aarch64, EPEL's erlang 26 caps you at RabbitMQ 4.3.2; dnf backtracks to
-# it automatically. On x86_64 the erlang repo below lifts that cap.
-cat > /etc/yum.repos.d/rabbitmq.repo << 'EOF'
+# So on aarch64, EPEL's erlang 26 caps you at RabbitMQ 4.3.2. dnf does NOT
+# just backtrack to it: EL9's dnf.conf has best=True, so `dnf install
+# rabbitmq-server` and every whole-system `dnf upgrade` fail on "cannot
+# install the best candidate". Exclude the versions EPEL's erlang can't
+# satisfy so 4.3.2 *is* the best candidate. On x86_64 the erlang repo below
+# lifts the cap, so nothing is excluded there.
+RABBIT_EXCLUDE=""
+if [ "$ARCH" != "x86_64" ]; then
+  RABBIT_EXCLUDE="excludepkgs=rabbitmq-server-4.3.[3-9]* rabbitmq-server-4.3.[1-9][0-9]* rabbitmq-server-4.[4-9]* rabbitmq-server-[5-9]*"
+fi
+cat > /etc/yum.repos.d/rabbitmq.repo << EOF
 [rabbitmq-server]
 name=RabbitMQ server (noarch)
 baseurl=https://yum1.rabbitmq.com/rabbitmq/el/9/noarch
         https://yum2.rabbitmq.com/rabbitmq/el/9/noarch
+$RABBIT_EXCLUDE
 repo_gpgcheck=0
 enabled=1
 gpgcheck=0
@@ -97,9 +113,9 @@ else
 
 NOTE ($ARCH): RabbitMQ publishes no Erlang RPMs for this architecture --
 yum1/yum2.rabbitmq.com/erlang/el/9/ has x86_64 and noarch only. Erlang will
-come from EPEL 9 (26.2.5), which caps rabbitmq-server at 4.3.2. dnf resolves
-that automatically; nothing further to do, but keep it in mind when a release
-note says "requires Erlang 27".
+come from EPEL 9 (26.2.5), which caps rabbitmq-server at 4.3.2; newer
+versions are excluded in /etc/yum.repos.d/rabbitmq.repo so dnf upgrades keep
+working. Lift that when EPEL's erlang moves to 27.
 
 EOF
 fi

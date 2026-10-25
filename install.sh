@@ -81,14 +81,13 @@ if [ "$DISTRO_FAMILY" = rhel ]; then
     EL_REPOS_SCRIPT="$INSTALLER_DIR/c4raven-el9-repos.sh"
   else
     # Don't let this fail quietly. setup_extra_repos' built-in fallback adds
-    # EPEL and CRB only -- it does NOT add the RabbitMQ repository, and EPEL 9
-    # has no rabbitmq-server. Without this warning the install looks fine, runs
-    # `dnf upgrade --refresh` over the whole box, and only then dies on an
-    # unresolvable rabbitmq-server with a raw dnf error two minutes in.
+    # EPEL, CRB and the RabbitMQ server repository, but not rabbitmq.com's
+    # x86_64 erlang repo or the nodejs module stream that
+    # rpm/c4raven-el9-repos.sh sets up (so rabbitmq-server is capped at 4.3.2
+    # by EPEL's erlang) -- say which copy of the repo logic is in use.
     echo "${RED}Could not fetch rpm/c4raven-el9-repos.sh.${NC}"
-    echo "${YELLOW}Falling back to EPEL + CRB only, which does NOT include the RabbitMQ${NC}"
-    echo "${YELLOW}repository -- 'rabbitmq-server' will almost certainly fail to resolve${NC}"
-    echo "${YELLOW}below. Fix your network or install that repo by hand, then re-run.${NC}"
+    echo "${YELLOW}Falling back to lib/distro.sh's built-in repository setup (EPEL, CRB,${NC}"
+    echo "${YELLOW}RabbitMQ). If a package fails to resolve below, fix your network and re-run.${NC}"
   fi
 fi
 
@@ -362,7 +361,9 @@ fi
 # Get the distro's own welcome page out of raven_http's way: on Debian that's
 # the default file in sites-enabled, on EL an inline `listen 80 default_server`
 # block in nginx.conf (commented out in place, with a .c4raven.bak beside it).
-nginx_disable_default_site
+# Non-fatal: on failure it restores nginx.conf and prints the by-hand fix;
+# aborting the whole install here would only leave less of it done.
+nginx_disable_default_site || true
 
 # Both raven_http and raven_https do `include proxy_params;` in their
 # /socket.io block. Debian's nginx package ships that file; EL's does not,

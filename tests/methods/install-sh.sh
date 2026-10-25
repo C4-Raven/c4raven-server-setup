@@ -48,14 +48,15 @@ chmod -R a+rX "$REPO"
 # --- the answers install.sh reads from /dev/tty -----------------------------
 ANSWERS=/tmp/install-sh.answers
 : > "$ANSWERS"
-# 1. the "this is not Ubuntu, continue anyway?" guard, if it is still there
-case "$DISTRO" in
-  ubuntu-*) ;;
-  *) grep -q 'Continue anyway' install.sh && echo y >> "$ANSWERS" ;;
-esac
+# No answer for the "continue anyway?" guard: every matrix distro passes
+# distro_supported, so install.sh never asks, and a stray y here would shift
+# every answer below by one (Turnstile on, keys "n"). Federation Hub is only
+# offered on the Debian family.
 echo n >> "$ANSWERS"   # Cloudflare Turnstile
 echo n >> "$ANSWERS"   # public domain (certbot cannot work in here anyway)
-echo n >> "$ANSWERS"   # Federation Hub .deb
+case "$DISTRO" in
+  ubuntu-*) echo n >> "$ANSWERS" ;;   # Federation Hub .deb
+esac
 say "answers fed to install.sh: $(tr '\n' ' ' < "$ANSWERS")"
 
 # --- run it exactly as a human would ---------------------------------------

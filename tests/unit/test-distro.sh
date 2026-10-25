@@ -419,6 +419,17 @@ sandbox_log_reset
 probe rocky-9 x86_64 'pg_init' >/dev/null
 log=$(sandbox_log)
 t_has "$log" "postgresql-setup --initdb" "rhel pg_init runs postgresql-setup --initdb on an empty PGDATA"
+
+# Re-run: PG_VERSION exists but sits in a 0700 postgres-owned directory, so
+# the check has to go through sudo or install.sh's user never sees it.
+sandbox_log_reset
+probe rocky-9 x86_64 '
+  PG_DATA_DIR="$SANDBOX/pgdata-rerun"; mkdir -p "$PG_DATA_DIR"
+  touch "$PG_DATA_DIR/PG_VERSION"
+  pg_init' >/dev/null
+log=$(sandbox_log)
+t_hasnt "$log" "postgresql-setup" "rhel pg_init does NOT initdb again when PG_VERSION exists"
+t_has "$log" "sudo test -f" "rhel pg_init checks PG_VERSION through sudo (PGDATA is 0700 postgres)"
 t_has "$log" "systemctl enable postgresql" "rhel pg_init enables postgresql"
 
 # The pg_hba.conf rewrite, run for real against a scratch copy of the file EL
@@ -435,9 +446,9 @@ host    all             all             ::1/128                 ident
 X
   pg_init >/dev/null 2>&1
   cat "$PG_DATA_DIR/pg_hba.conf"')
-t_match "$hba" '^host[[:space:]]+all[[:space:]]+all[[:space:]]+127\.0\.0\.1/32[[:space:]]+scram-sha-256$' \
-        "rhel pg_init switches the IPv4 host line from ident to scram-sha-256"
-t_match "$hba" '::1/128[[:space:]]+scram-sha-256' \
+t_match "$hba" '^host[[:space:]]+all[[:space:]]+all[[:space:]]+127\.0\.0\.1/32[[:space:]]+md5$' \
+        "rhel pg_init switches the IPv4 host line from ident to md5 (PG 13 stores md5 passwords)"
+t_match "$hba" '::1/128[[:space:]]+md5' \
         "rhel pg_init switches the IPv6 host line too"
 t_match "$hba" '^local[[:space:]]+all[[:space:]]+all[[:space:]]+peer$' \
         "rhel pg_init leaves the local/peer line alone (install.sh's sudo -u postgres psql depends on it)"
@@ -450,7 +461,15 @@ hba2=$(probe rocky-9 x86_64 '
   pg_init >/dev/null 2>&1; pg_init >/dev/null 2>&1
   cat "$PG_DATA_DIR/pg_hba.conf"')
 t_eq "$hba2" "host    all  all  127.0.0.1/32  scram-sha-256" \
-     "rhel pg_init is idempotent on an already-converted pg_hba.conf"
+     "rhel pg_init leaves a scram-sha-256 host line alone"
+hba3=$(probe rocky-9 x86_64 '
+  PG_DATA_DIR="$SANDBOX/pgdata3"; mkdir -p "$PG_DATA_DIR"
+  touch "$PG_DATA_DIR/PG_VERSION"
+  printf "host    all  all  127.0.0.1/32  ident\n" > "$PG_DATA_DIR/pg_hba.conf"
+  pg_init >/dev/null 2>&1; pg_init >/dev/null 2>&1
+  cat "$PG_DATA_DIR/pg_hba.conf"')
+t_eq "$hba3" "host    all  all  127.0.0.1/32  md5" \
+     "rhel pg_init is idempotent across re-runs"
 unset PROBE_PATH
 
 # ===========================================================================

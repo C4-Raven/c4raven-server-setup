@@ -66,6 +66,16 @@ c4raven-server c4raven-server/domain string
 c4raven-server c4raven-server/turnstile-enable boolean false
 EOF
 
+# debian/control Depends on nodejs (>= 20.19) and noble ships 18.19, so the
+# package cannot install until NodeSource is set up -- which is what the
+# control file tells users to do first. Use the installer's own helper.
+say "setting up NodeSource Node.js 22"
+# shellcheck source=lib/distro.sh
+. "$REPO/lib/distro.sh"
+detect_distro || true
+node_install || exit 1
+node_ok || { echo "FAIL: node $(node --version 2>&1) is older than 20.19" >&2; exit 1; }
+
 say "installing the package"
 apt-get install -y -o Dpkg::Options::=--force-confnew "./$DEB"
 rc=$?

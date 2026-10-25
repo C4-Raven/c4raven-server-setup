@@ -443,8 +443,9 @@ EOF
     # The database schema is created by the migrations the server runs on
     # startup, so wait for it to answer before anything touches the database.
     echo "Waiting for the Raven server to come up..."
+    RAVEN_UP=""
     for i in $(seq 1 60); do
-      if curl -fsS -o /dev/null http://127.0.0.1:8081/api/health 2>/dev/null; then break; fi
+      if curl -fsS -o /dev/null http://127.0.0.1:8081/api/health 2>/dev/null; then RAVEN_UP=1; break; fi
       if [ "$i" -eq 60 ]; then
         echo "raven did not answer on 127.0.0.1:8081 after 2 minutes -- check $DATA_DIR/logs/raven.log"
       fi
@@ -489,13 +490,20 @@ EOF
         esac
       done
 
-      # The new services are running from the new venv; drop older ones.
+      # The new services are running from the new venv; drop older ones --
+      # but only once raven has answered, so a broken upgrade can still be
+      # rolled back by repointing the symlink.
       CURRENT_VENV=$(readlink -f "$APP_HOME/venv")
-      for d in "$APP_HOME"/venvs/*; do
-        if [ -d "$d" ] && [ "$(readlink -f "$d")" != "$CURRENT_VENV" ]; then
-          rm -rf "$d"
-        fi
-      done
+      if [ -n "$RAVEN_UP" ]; then
+        for d in "$APP_HOME"/venvs/*; do
+          if [ -d "$d" ] && [ "$(readlink -f "$d")" != "$CURRENT_VENV" ]; then
+            rm -rf "$d"
+          fi
+        done
+      else
+        echo "Kept the previous venvs in $APP_HOME/venvs because raven did not come up."
+        echo "To roll back: ln -sfn $APP_HOME/venvs/<previous> $APP_HOME/venv && systemctl restart raven cot_parser eud_handler eud_handler_ssl"
+      fi
     fi
 
     echo

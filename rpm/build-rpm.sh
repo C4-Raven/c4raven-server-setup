@@ -226,6 +226,8 @@ install -m 644 "$REPO/rabbitmq.conf" "$REPO/seed_admin.py" "$REPO/seed_plugin.py
 # Debian's nginx ships /etc/nginx/proxy_params and EL's does not; the raven_http
 # and raven_https templates `include` it, so nginx would refuse to start.
 install -m 644 "$HERE/proxy_params" "$STAGE/usr/share/c4raven-server/proxy_params"
+# 10. configure.sh prefers this to lib/distro.sh's nginx_disable_default_site.
+install -m 755 "$HERE/nginx_default_server.py" "$STAGE/usr/share/c4raven-server/nginx_default_server.py"
 if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE' "$STAGE/usr/share/c4raven-server/"; then
   echo "error: unsubstituted placeholder left in staged data files" >&2
   exit 1

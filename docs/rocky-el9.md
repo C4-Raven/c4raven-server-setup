@@ -43,7 +43,6 @@ architecture-specific.
 | certbot, python3-certbot-nginx (noarch), erlang 26.2.5, ffmpeg-free 7.1.5 | EPEL 9, both arches |
 | rabbitmq-server (noarch) | `yum1`/`yum2.rabbitmq.com` |
 | erlang (newer than EPEL's) | `yum1`/`yum2.rabbitmq.com`, **x86_64 only** |
-| PostGIS | PGDG only — not configured, see below |
 | full `ffmpeg` (patent-encumbered codecs) | RPM Fusion only — not configured |
 
 ### Answering the install-time questions
@@ -93,12 +92,12 @@ is the retry, and it is safe to run as many times as you need.
 | `proxy_params` | shipped by the distro | not shipped; the package installs its own copy |
 | default site | a file in `sites-enabled` nobody enables | a `server{}` block inline in `nginx.conf`, commented out on install |
 | PostgreSQL | cluster created and started by the package | `postgresql-setup --initdb` first, service disabled until then |
-| `pg_hba.conf` | host connections already scram/md5 | `ident` by default; the two 127.0.0.1 lines are switched to `scram-sha-256` |
+| `pg_hba.conf` | host connections already scram/md5 | `ident` by default; the two loopback lines are switched to `md5` (PG 13 stores md5 passwords, which `scram-sha-256` cannot verify) |
 | Python | `python3` is new enough | `python3` is 3.9, below the backend's `>=3.10`; the venv uses `python3.12` |
 | webroot | `/var/www` exists | `/var/www` does not exist at all and is created |
 | MAC | AppArmor, no nginx profile enforced | SELinux targeted, **Enforcing** |
 | Firewall | ufw installed but inactive | firewalld running, default-deny |
-| PostGIS | `postgresql-postgis` | not packaged; extension creation is best-effort |
+| PostGIS | `postgresql-postgis` | AppStream `postgis`, a Recommends; extension creation is best-effort |
 | ffmpeg | `ffmpeg` | `ffmpeg-free` from EPEL, and only `Recommends:` |
 | Federation Hub | optional `.deb` | not available |
 
@@ -166,15 +165,13 @@ the installer is running in.
 
 Neither is a hard dependency on EL, for different reasons.
 
-**PostGIS** is not in EL9 AppStream and not in EPEL 9. It exists only in
-PGDG, and pulling PGDG in means replacing the distro PostgreSQL and
-inheriting a versioned `postgresql-16.service` unit name with it.
-Nothing in the current schema actually uses it — the one migration that
-mentions PostGIS (`8a43097881d7`) was written without geoalchemy2 — so
-the setup script creates the extension if it can and carries on if it
-can't. If you do want it: install PGDG's `postgresql16-server` and
-`postgis34_16`, set `PG_SERVICE=postgresql-16`, and
-`CREATE EXTENSION postgis` by hand.
+**PostGIS** is in EL9 AppStream (`postgis` 3.5.3, x86_64 and aarch64,
+checked against Rocky 9 repodata on 2026-10-26). Nothing in the current
+schema actually uses it — the one migration that mentions PostGIS
+(`8a43097881d7`) was written without geoalchemy2 — so the RPM only
+Recommends it and the setup script creates the extension if it can and
+carries on if it can't. PGDG's PostgreSQL (`postgresql-16.service`) is
+not supported by the setup script.
 
 **ffmpeg** is used only by the YouTube-restream path in
 `mediamtx_api.py`, where all three call sites sit inside
@@ -196,13 +193,15 @@ x86_64 and noarch only — `yum1.rabbitmq.com/erlang/el/9/aarch64` 404s.
 Erlang therefore comes from EPEL 9 (26.2.5), and RabbitMQ's packages
 carry `Requires: erlang >= N, erlang < M`:
 
-- erlang >=26 <29 → newest `rabbitmq-server` 4.3.2
-- erlang >=27 <30 → newest `rabbitmq-server` 4.4.0
+- 4.3.0–4.3.2: erlang >=26 <29
+- 4.3.3 and later 4.3.x: erlang >=27 <29
+- 4.4.0: erlang >=27 <30
 
-dnf backtracks to 4.3.2 on its own; there is nothing to do about it, but
-keep it in mind the next time a release note says "requires Erlang 27".
-`c4raven-el9-repos.sh` prints this as a note when it runs on a non-x86_64
-machine.
+dnf does not settle on 4.3.2 by itself: EL9's `best=True` makes
+`dnf install rabbitmq-server` and every whole-system `dnf upgrade` fail
+on the newer candidate. So on non-x86_64 `c4raven-el9-repos.sh` adds an
+`excludepkgs=` for every version EPEL's erlang can't satisfy, and prints
+a note saying so. Lift it once EPEL's erlang reaches 27.
 
 ## Offline
 
@@ -244,9 +243,15 @@ In rough order of likelihood on a fresh EL9 box:
    --list-ports`.
 5. Backend won't start, database connection refused → `pg_hba.conf`
    still on `ident`, or the cluster was never initdb'd.
-6. CA creation or device enrollment fails on PKCS12 → RHEL
-   crypto-policies refusing the legacy provider's RC2/3DES; the setup
-   script preflights this and warns loudly rather than failing.
+6. CA creation or device enrollment fails on PKCS12 → almost
+   certainly FIPS mode (`fips-mode-setup --check`), not crypto-policies.
+   Tested 2026-10-26 in a Rocky 9.8 rootfs (OpenSSL 3.5.5): the exact
+   `openssl pkcs12 -legacy -export` calls in
+   `raven/certificate_authority.py` succeed under DEFAULT, LEGACY and
+   FUTURE and emit RC2-40 cert bags plus a 3DES key bag. Under FIPS the
+   RC2 fetch is refused, openssl exits 1 and the server raises "Failed
+   to export truststore / p12 key"; ATAK enrollment cannot work on a
+   FIPS host. The setup script also preflights this and warns loudly.
 7. UI build fails → the `nodejs` module stream is still 18.
 
 `sudo tests/verify.sh` runs the full set of post-install assertions

@@ -22,10 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # shellcheck 0.9.0, rpm 4.18 and python3 are all preinstalled on the
-      # ubuntu-24.04 runner image; PyYAML is the only gap.
-      - name: Install the one thing the image lacks
-        run: python3 -m pip install --quiet --break-system-packages pyyaml
+      # shellcheck and python3 are preinstalled on the ubuntu-24.04 runner
+      # image. rpm (for rpmspec) is too today, but STRICT=1 fails without
+      # it, so install it rather than trust the image.
+      - name: Install what the image lacks
+        run: |
+          sudo apt-get install -y -qq rpm
+          python3 -m pip install --quiet --break-system-packages pyyaml
 
       - name: Report tool versions
         run: |

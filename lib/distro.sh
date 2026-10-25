@@ -535,8 +535,8 @@ stack_packages() {
 #              mediamtx_api.py sits inside try/except that logs and continues,
 #              so missing it costs stream thumbnails and recording metadata;
 #              the webhook still returns 200.
-#   postgis -- EL AppStream has no PostGIS at all; it comes from PGDG. The
-#              backend creates the extension if it can and runs without it.
+#   postgis -- in EL AppStream (3.5.3), but nothing in the schema uses it.
+#              The backend creates the extension if it can and runs without it.
 stack_packages_optional() {
   case "${DISTRO_FAMILY:-}" in
     rhel) echo "ffmpeg-free postgis" ;;
@@ -548,7 +548,7 @@ stack_packages_optional() {
 # Third-party repositories (EL only -- Ubuntu has everything in main/universe)
 #
 # EPEL 9 carries certbot, erlang and ffmpeg-free (7.1.5, x86_64 AND aarch64 --
-# verified against EPEL repodata for both), but NOT rabbitmq-server or postgis.
+# verified against EPEL repodata for both), but NOT rabbitmq-server (postgis is in AppStream).
 #
 # ffmpeg-free is the package name to install: EPEL has no plain `ffmpeg`, and
 # `dnf install ffmpeg` on an EPEL-only box fails. RPM Fusion is the only source
@@ -590,14 +590,17 @@ setup_extra_repos() {
   # stays the source of truth -- keep the two in step. Only the noarch server
   # repo is duplicated: it is the one install.sh cannot proceed without, it is
   # noarch so one URL serves both arches, and erlang comes from EPEL (26.2.5,
-  # x86_64 and aarch64), which caps rabbitmq-server at 4.3.2. Run the helper
-  # script instead if you want the x86_64-only erlang repo that lifts the cap.
+  # x86_64 and aarch64), which caps rabbitmq-server at 4.3.2 -- excluded above
+  # it, because EL9's dnf (best=True) fails rather than backtrack. Run the
+  # helper script instead if you want the x86_64-only erlang repo that lifts
+  # the cap.
   if [ ! -f /etc/yum.repos.d/rabbitmq.repo ]; then
     _sudo tee /etc/yum.repos.d/rabbitmq.repo >/dev/null << 'EOF'
 [rabbitmq-server]
 name=RabbitMQ server (noarch)
 baseurl=https://yum1.rabbitmq.com/rabbitmq/el/9/noarch
         https://yum2.rabbitmq.com/rabbitmq/el/9/noarch
+excludepkgs=rabbitmq-server-4.3.[3-9]* rabbitmq-server-4.3.[1-9][0-9]* rabbitmq-server-4.[4-9]* rabbitmq-server-[5-9]*
 repo_gpgcheck=0
 enabled=1
 gpgcheck=0
@@ -616,12 +619,20 @@ EOF
 #
 # EL's generated pg_hba.conf also defaults to `ident` for host connections,
 # which rejects the password auth the app's 127.0.0.1 URI relies on. We switch
-# the two host lines to scram-sha-256 and leave local/peer alone, so the
+# the two host lines to md5 and leave local/peer alone, so the
 # `sudo -u postgres psql` calls in install.sh keep working untouched.
+#
+# md5, not scram-sha-256: EL9 AppStream's PostgreSQL is 13, whose
+# password_encryption still defaults to md5, so the role's password is stored
+# as an MD5 hash and a scram-sha-256 line can never verify it. The md5 method
+# accepts both kinds of stored password (it does SCRAM when the stored one is).
 # ---------------------------------------------------------------------------
 pg_init() {
   if [ "${DISTRO_FAMILY:-}" = rhel ]; then
-    if [ -n "$PG_DATA_DIR" ] && [ ! -f "$PG_DATA_DIR/PG_VERSION" ]; then
+    # _sudo: /var/lib/pgsql is 0700 postgres, so as install.sh's ordinary user
+    # a plain test never sees PG_VERSION and every re-run would initdb again
+    # ("Data directory ... is not empty!") and abort.
+    if [ -n "$PG_DATA_DIR" ] && ! _sudo test -f "$PG_DATA_DIR/PG_VERSION"; then
       _sudo postgresql-setup --initdb
     fi
     local hba="$PG_DATA_DIR/pg_hba.conf"
@@ -633,14 +644,14 @@ pg_init() {
     # the rewrite below never runs -- leaving `ident` in place, which is
     # exactly the failure this function exists to prevent.
     if _sudo test -f "$hba" \
-       && ! _sudo grep -qE '^[[:space:]]*host[[:space:]].*[[:space:]]scram-sha-256([[:space:]]|$)' "$hba"; then
+       && ! _sudo grep -qE '^[[:space:]]*host[[:space:]].*[[:space:]](md5|scram-sha-256)([[:space:]]|$)' "$hba"; then
       # Anchor on the address rather than the method: EL's packaging has
       # shipped `ident` for years, but plain initdb's own default is `trust`,
       # and both are wrong for the app's password-authenticated 127.0.0.1
       # URI. Trailing whitespace is tolerated. Re-running is a no-op because
       # the guard above then matches.
       _sudo sed -i -E \
-        's/^([[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+(127\.0\.0\.1\/32|::1\/128)[[:space:]]+)(ident|peer|trust|md5|password)([[:space:]]*)$/\1scram-sha-256\4/' \
+        's/^([[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+(127\.0\.0\.1\/32|::1\/128)[[:space:]]+)(ident|peer|trust|password)([[:space:]]*)$/\1md5\4/' \
         "$hba"
       # On a re-run postgres is already up, so the `systemctl start` below is
       # a no-op and the rewritten rules would not take effect until reboot.

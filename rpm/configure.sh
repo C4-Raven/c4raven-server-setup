@@ -38,10 +38,23 @@ FLASK_ENV="FLASK_APP=raven.app RAVEN_DATA_FOLDER='$DATA_DIR'"
 #
 #   RAVEN_DOMAIN=tak.example.org dnf install ./c4raven-server-*.rpm
 # ---------------------------------------------------------------------------
+# setup.conf assigns every key (most of them empty), so sourcing it plainly
+# would wipe what the environment set. Save the environment's RAVEN_* values
+# first and put them back afterwards.
+_env_answers=""
+for _v in $(compgen -v RAVEN_ || true); do
+  _env_answers="$_env_answers$(declare -p "$_v")
+"
+done
+unset _v
 if [ -f "$CONF_FILE" ]; then
   # shellcheck source=/dev/null
   . "$CONF_FILE"
 fi
+if [ -n "$_env_answers" ]; then
+  eval "$_env_answers"
+fi
+unset _env_answers
 RAVEN_DOMAIN="${RAVEN_DOMAIN:-}"
 RAVEN_TURNSTILE_ENABLE="${RAVEN_TURNSTILE_ENABLE:-false}"
 RAVEN_TURNSTILE_SITE_KEY="${RAVEN_TURNSTILE_SITE_KEY:-}"
@@ -89,7 +102,9 @@ fi
 # %post runs during kickstart, image builds and `dnf --installroot` work, where
 # firewalld is *enabled but not yet started*. `firewall-cmd --permanent` does
 # not need the daemon: it edits /etc/firewalld/zones directly and the rules take
-# effect the moment firewalld starts. The shim's gate turns the whole step into
+# effect the moment firewalld starts -- but `firewall-cmd` itself refuses with
+# "FirewallD is not running", so that case goes through firewall-offline-cmd,
+# which writes the same permanent config with no daemon. The shim's gate turns the whole step into
 # a silent no-op in exactly the unattended cases the RPM exists to serve, and
 # RAVEN_OPEN_FIREWALL=true then lies.
 #
@@ -101,16 +116,21 @@ firewall_open() {
     echo "  open these yourself: $*" >&2
     return 0
   fi
-  local p failed=""
+  local p failed="" running=""
+  systemctl is-active --quiet firewalld 2>/dev/null && running=1
   for p in "$@"; do
-    firewall-cmd --permanent --add-port="$p" >/dev/null 2>&1 || failed="$failed $p"
+    if [ -n "$running" ]; then
+      firewall-cmd --permanent --add-port="$p" >/dev/null 2>&1 || failed="$failed $p"
+    else
+      firewall-offline-cmd --add-port="$p" >/dev/null 2>&1 || failed="$failed $p"
+    fi
   done
   if [ -n "$failed" ]; then
     echo "  could not add permanent rule(s) for:$failed -- open them by hand." >&2
   fi
-  if systemctl is-active --quiet firewalld 2>/dev/null; then
+  if [ -n "$running" ]; then
     firewall-cmd --reload >/dev/null 2>&1 || true
-  else
+  elif [ -z "$failed" ]; then
     echo "  firewalld is not running: the permanent rules were written and will"
     echo "  take effect when it starts (systemctl enable --now firewalld)."
   fi
@@ -289,7 +309,9 @@ else
   # EL's generated pg_hba.conf authenticates host connections from 127.0.0.1
   # with `ident`, which has no ident daemon to talk to and fails. The backend
   # connects over TCP to 127.0.0.1 with the password generated below, so those
-  # two lines have to become scram-sha-256. (Debian's pg_hba already uses
+  # two lines have to become md5 -- not scram-sha-256, because EL9's
+  # PostgreSQL 13 stores passwords as md5 by default and a scram line cannot
+  # verify those (see pg_init in lib/distro.sh). (Debian's pg_hba already uses
   # scram/md5 for host connections, which is why the .deb has no equivalent.)
   #
   # Anchor on the *address*, not on the method. This used to match `ident`
@@ -302,12 +324,12 @@ else
   # as pg_init() in lib/distro.sh.
   PG_HBA="$PGDATA_DIR/pg_hba.conf"
   if [ -f "$PG_HBA" ] \
-     && ! grep -qE '^[[:space:]]*host[[:space:]].*[[:space:]]scram-sha-256([[:space:]]|$)' "$PG_HBA"; then
+     && ! grep -qE '^[[:space:]]*host[[:space:]].*[[:space:]](md5|scram-sha-256)([[:space:]]|$)' "$PG_HBA"; then
     cp -a "$PG_HBA" "$PG_HBA.c4raven.bak"
     sed -i -E \
-      's/^([[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+(127\.0\.0\.1\/32|::1\/128)[[:space:]]+)(ident|peer|trust|md5|password)([[:space:]]*)$/\1scram-sha-256\4/' \
+      's/^([[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+(127\.0\.0\.1\/32|::1\/128)[[:space:]]+)(ident|peer|trust|password)([[:space:]]*)$/\1md5\4/' \
       "$PG_HBA"
-    echo "Switched local TCP authentication to scram-sha-256 (backup: $PG_HBA.c4raven.bak)"
+    echo "Switched local TCP authentication to md5 (backup: $PG_HBA.c4raven.bak)"
     systemctl reload "$PG_SERVICE" || true
   fi
 fi
@@ -385,8 +407,9 @@ esac
 # Preflight, EL-only: raven/certificate_authority.py runs
 # `openssl pkcs12 -legacy -export ...` whenever `openssl list -providers`
 # succeeds, which it does on every OpenSSL 3 build and therefore on EL9. The
-# -legacy flag needs the legacy provider to actually load, and RHEL 9's
-# crypto-policies can refuse the RC2/3DES ciphers that PKCS12 then uses. If that
+# -legacy flag needs RC2/3DES from the legacy provider. Rocky 9.8's DEFAULT,
+# LEGACY and FUTURE crypto-policies all allow it (checked 2026-10-26, OpenSSL
+# 3.5.5); FIPS mode does not, and no policy change fixes that. If it
 # fails, CA creation and every ATAK enrollment data package fail with it, so
 # prove it works before create-ca rather than discovering it at the first device
 # enrollment. Non-fatal: warn loudly and carry on, because the failure mode is
@@ -404,10 +427,9 @@ if ! (
   echo "WARNING: 'openssl pkcs12 -legacy' does not work on this system." >&2
   echo "  The Raven CA uses it to build the .p12 truststore in every ATAK" >&2
   echo "  enrollment data package, so certificate enrollment will fail." >&2
-  echo "  Most likely cause on EL9: the system crypto policy blocks the legacy" >&2
-  echo "  provider's RC2/3DES. Check with:  openssl list -providers -provider legacy" >&2
-  echo "  and, if your security posture allows it:" >&2
-  echo "      sudo update-crypto-policies --set LEGACY && sudo reboot" >&2
+  echo "  Most likely cause on EL9: FIPS mode, which forbids the RC2/3DES ATAK" >&2
+  echo "  truststores need. Check with:  fips-mode-setup --check" >&2
+  echo "  ATAK enrollment cannot work on a FIPS host; use a non-FIPS server." >&2
   echo
 fi
 rm -rf "$PKCS12_PROBE"
@@ -686,6 +708,9 @@ if [ -n "$DOMAIN" ]; then
   certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
     -m "${RAVEN_CERTBOT_EMAIL:-admin@${DOMAIN}}" --redirect || \
     echo "certbot failed -- check that ${DOMAIN} already resolves to this server's public IP, then run: sudo certbot --nginx -d ${DOMAIN}"
+  # Debian's certbot enables its renewal timer on install; EPEL's ships
+  # certbot-renew.timer disabled, and the certificate would lapse in 90 days.
+  systemctl enable --now certbot-renew.timer || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -746,17 +771,10 @@ mkdir -p /etc/rabbitmq
 rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
 install -m 644 "$PKGDATA/rabbitmq.conf" /etc/rabbitmq/rabbitmq.conf
 
-# The .deb reads the version out of `rabbitmqadmin --version`. RabbitMQ 4.x
-# dropped the bundled python rabbitmqadmin in favour of a separate download, so
-# take the version straight off the installed tree instead and fall back to
-# rabbitmqadmin if that ever stops working.
-RABBITMQ_VERSION=$(basename "$(ls -d /usr/lib/rabbitmq/lib/rabbitmq_server-* 2>/dev/null | sort -V | tail -1)" 2>/dev/null | sed 's/^rabbitmq_server-//')
-if [ -z "$RABBITMQ_VERSION" ] || [ "$RABBITMQ_VERSION" = "*" ]; then
-  RABBITMQ_VERSION=$(rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
-fi
-if [ -n "$RABBITMQ_VERSION" ] && ! grep -q PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf 2>/dev/null; then
-  echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" >> /etc/rabbitmq/rabbitmq-env.conf
-fi
+# No PLUGINS_DIR in rabbitmq-env.conf, unlike the .deb: the RPM's
+# rabbitmq-defaults already derives it from the installed version, and a
+# pinned rabbitmq_server-X/plugins path stops the broker booting after the
+# next `dnf upgrade` removes that directory.
 systemctl enable "$RABBIT_SERVICE"
 systemctl restart "$RABBIT_SERVICE"
 

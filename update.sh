@@ -27,7 +27,7 @@ fi
 # The offline .deb installs a plain venv (/opt/raven/venv) and no source
 # checkout; it's upgraded by installing a newer offline bundle, not by pulling.
 if sudo test -L "$APP_HOME/venv"; then
-  echo "${RED}This server was installed from the offline package. To update it, run install.sh from a newer c4raven-server-offline bundle (or sudo apt install ./c4raven-server_<version>_amd64.deb).${NC}"
+  echo "${RED}This server was installed from the offline package. To update it, run install.sh from a newer c4raven-server-offline bundle (or sudo apt install ./c4raven-server_<version>_<arch>.deb).${NC}"
   exit 1
 fi
 
