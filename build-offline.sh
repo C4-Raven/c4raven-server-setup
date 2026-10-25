@@ -26,40 +26,36 @@
 # (any Ubuntu/Debian), and a python3.X interpreter for every PY_VERSIONS
 # entry -- found on PATH or through `uv python find`.
 #
-# ARCHITECTURE: build each architecture ON that architecture.
+# ARCHITECTURE: build each architecture on that architecture if you can.
 #
 #   Everything in the bundle is arch-specific except the UI: the wheels, the
-#   apt packages, mediamtx, the .deb. Most of that can be fetched for a
-#   foreign arch, but not all of it, and the gap is silent rather than loud:
+#   apt packages, mediamtx, the .deb. Most of that is fetched for the target
+#   arch, whatever the build host is. The exception is the Python sdists:
 #
 #     * `pip download --platform` can only take wheels PyPI already has. Any
 #       requirement with no wheel for the target falls through to its sdist,
-#       which the block below compiles -- with THIS machine's compiler, for
-#       THIS machine's architecture. Four of the lock's sdist-only packages
-#       (flask-apscheduler, flask-principal, sgmllib3k, simplekml) are pure
-#       Python and build an arch-independent py3-none-any wheel, so they are
-#       harmless. Two are C extensions: mutf8 1.0.6 (no cp31x wheels at all,
-#       for any arch) and unishox2-py3 1.0.0 (wheels stop at cp310). Those
-#       two build a linux_<host arch> wheel every time. Cross-build and the
-#       bundle ships two x86_64 .so files labelled arm64; the build's own
-#       verify step passes, because it runs on the build host, and the
-#       failure surfaces at install time on the customer's machine.
+#       which the block below compiles. Four of the lock's sdist-only
+#       packages (flask-apscheduler, flask-principal, sgmllib3k, simplekml)
+#       are pure Python and build an arch-independent py3-none-any wheel.
+#       Two are C extensions: mutf8 1.0.6 (no cp31x wheels at all, for any
+#       arch) and unishox2-py3 1.0.0 (wheels stop at cp310). On a native
+#       build those come out as linux_<arch> wheels and the verify step
+#       installs and imports them.
 #
-#     * the glibc audit below runs objdump on whatever was compiled here, so
-#       it only means anything when "here" is the target arch.
+#   So: TARGET_ARCH defaults to this machine's and a mismatch is refused
+#   unless ALLOW_CROSS_BUILD=1. The script is arch-clean -- run it unchanged
+#   on a native arm64 box, an arm64 cloud VM, or `docker run --platform
+#   linux/arm64` on a binfmt/qemu host, and it builds a fully verified
+#   arm64 bundle. That is the preferred way.
 #
-#   So: TARGET_ARCH defaults to this machine's and a mismatch is refused.
-#   The script itself is arch-clean -- run it unchanged on a native arm64
-#   box, an arm64 cloud VM, or `docker run --platform linux/arm64` on a
-#   binfmt/qemu-enabled host, and it builds an arm64 bundle.
-#
-#   ALLOW_CROSS_BUILD=1 lifts the refusal for the day mutf8 and unishox2-py3
-#   gain aarch64 wheels (or are dropped from the lock). It is not a way to
-#   force a cross-build today: the build still hard-fails if any wheel it
-#   had to compile locally is not arch-independent, and it downgrades the
-#   "install it and import it" verification to a resolve-only check, because
-#   foreign-arch wheels cannot be imported here. This path is unproven --
-#   treat the first bundle out of it as suspect.
+#   ALLOW_CROSS_BUILD=1 builds on a foreign host anyway. Any sdist that does
+#   not produce an arch-independent wheel is rebuilt with zig (ziglang from
+#   PyPI) as a cross C compiler, against the target's CPython headers
+#   (libpython3.X-dev for TARGET_ARCH, fetched from the Ubuntu archive for
+#   SUITES) and glibc 2.17, and every .so in the wheelhouse is checked to be
+#   an ELF object for TARGET_ARCH. What it cannot do is import those wheels:
+#   the verify step drops to a resolve-only check. Smoke-test the first
+#   cross-built bundle on real target hardware before shipping it.
 #
 # Optional overrides:
 #   SERVER_SHA / UI_SHA   commits to package (default: each repo's main tip)
@@ -100,6 +96,7 @@ TARGET_ARCH="${TARGET_ARCH:-$HOST_ARCH}"
 case "$TARGET_ARCH" in
   amd64)
     WHEEL_ARCH=x86_64
+    ELF_MACHINE=62              # ELF e_machine (EM_X86_64), for the .so check
     PLATFORMS=(manylinux_2_28_x86_64 manylinux_2_17_x86_64 manylinux2014_x86_64
                manylinux_2_5_x86_64 manylinux1_x86_64 linux_x86_64 any)
     MEDIAMTX_ARCH=amd64
@@ -107,6 +104,7 @@ case "$TARGET_ARCH" in
     ;;
   arm64)
     WHEEL_ARCH=aarch64
+    ELF_MACHINE=183             # EM_AARCH64
     # No manylinux1/manylinux_2_5 here: those tags predate aarch64 support
     # and no project publishes them for it.
     PLATFORMS=(manylinux_2_28_aarch64 manylinux_2_17_aarch64 manylinux2014_aarch64
@@ -124,20 +122,20 @@ if [ "$TARGET_ARCH" != "$HOST_ARCH" ] && [ "${ALLOW_CROSS_BUILD:-0}" != 1 ]; the
   cat >&2 <<EOF
 error: this machine is $HOST_ARCH and TARGET_ARCH=$TARGET_ARCH.
 
-  The bundle cannot be cross-built. Two locked dependencies -- mutf8 1.0.6
+  Cross-builds are off by default. Two locked dependencies -- mutf8 1.0.6
   and unishox2-py3 1.0.0 -- publish no wheel for any supported Python, so
-  pip builds them from source, and that build targets $HOST_ARCH no matter
-  what --platform says. The result would be a bundle labelled $TARGET_ARCH
-  carrying $HOST_ARCH shared objects, and nothing before the customer's
-  install would notice.
+  they are compiled from source, and a plain compile targets $HOST_ARCH no
+  matter what --platform says.
 
-  Build $TARGET_ARCH bundles on $TARGET_ARCH hardware: a real machine, a
-  cloud VM, or 'docker run --platform linux/$TARGET_ARCH' on a binfmt/qemu
-  host. This script needs no changes to run there.
+  Preferred: build $TARGET_ARCH bundles on $TARGET_ARCH hardware -- a real
+  machine, a cloud VM, or 'docker run --platform linux/$TARGET_ARCH' on a
+  binfmt/qemu host. This script needs no changes to run there, and the
+  bundle gets the full install-and-import verification.
 
-  If those two packages have since gained $WHEEL_ARCH wheels, set
-  ALLOW_CROSS_BUILD=1; the build then refuses any locally compiled wheel
-  that is not arch-independent, so it will tell you if they have not.
+  Or set ALLOW_CROSS_BUILD=1: those packages are then cross-compiled for
+  $WHEEL_ARCH with zig (fetched from PyPI) against the target's CPython
+  headers, and every shared object is checked to be $WHEEL_ARCH. The wheels
+  cannot be imported here, so smoke-test the bundle on $TARGET_ARCH hardware.
 EOF
   exit 1
 fi
@@ -242,6 +240,90 @@ TOOLS="$WORK/tools/bin"
 "$TOOLS/pip" install --quiet --disable-pip-version-check \
   poetry==2.2.1 poetry-plugin-export==1.10.1 androguard==4.1.3
 
+# pip's --platform flags, shared by the download and the cross-build verify.
+PLATFORM_FLAGS=()
+for p in "${PLATFORMS[@]}"; do PLATFORM_FLAGS+=(--platform "$p"); done
+
+if [ "$CROSS" = 1 ]; then
+  # Cross C compiler for the sdists that turn out to be C extensions. zig
+  # bundles clang plus libc stubs for every target, so nothing needs to be
+  # installed on the host; .2.17 pins the glibc symbol versions it links
+  # against to manylinux2014's floor, well under any GLIBC_MAX.
+  "$TOOLS/pip" install --quiet --disable-pip-version-check ziglang==0.16.0
+  printf '#!/bin/sh\nexec "%s" -m ziglang cc -target %s-linux-gnu.2.17 "$@"\n' \
+    "$TOOLS/python" "$WHEEL_ARCH" > "$WORK/cross-cc"
+  chmod 755 "$WORK/cross-cc"
+
+  # The target's CPython headers. Only pyconfig.h is really arch-specific,
+  # but take the whole set from the same archive the bundle's apt half comes
+  # from, so they match what the target's python3 was built with. One
+  # private apt root over every suite: noble carries libpython3.12-dev,
+  # questing libpython3.13-dev.
+  XA="$WORK/apt-pyheaders"
+  mkdir -p "$XA"/etc/apt/{sources.list.d,apt.conf.d,preferences.d} \
+           "$XA"/var/lib/apt/lists/partial "$XA"/var/cache/apt/archives/partial "$XA"/var/lib/dpkg
+  : > "$XA/var/lib/dpkg/status"
+  for s in $SUITES; do
+    cat >> "$XA/etc/apt/sources.list.d/ubuntu.sources" << EOF
+Types: deb
+URIs: $UBUNTU_MIRROR
+Suites: $s $s-updates
+Components: main
+Architectures: $TARGET_ARCH
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: $UBUNTU_SECURITY_MIRROR
+Suites: $s-security
+Components: main
+Architectures: $TARGET_ARCH
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+EOF
+  done
+  XAPT=(apt-get -q
+    -o Dir="$XA" -o Dir::State::status="$XA/var/lib/dpkg/status"
+    -o Dir::Etc::SourceList=/dev/null -o Dir::Etc::SourceParts="$XA/etc/apt/sources.list.d"
+    -o Dir::Etc::Parts="$XA/etc/apt/apt.conf.d" -o Dir::Etc::Preferences="$XA/etc/apt/preferences"
+    -o Dir::Etc::PreferencesParts="$XA/etc/apt/preferences.d"
+    -o APT::Architecture="$TARGET_ARCH" -o APT::Architectures::="$TARGET_ARCH"
+    -o Debug::NoLocking=true)
+  "${XAPT[@]}" update >/dev/null || die "could not fetch $TARGET_ARCH package lists for the Python headers"
+fi
+
+# cross_wheel V SDIST OUTDIR -- rebuilds SDIST as a C extension for
+# TARGET_ARCH, with the zig cross compiler and the target's Python V headers.
+# No build isolation: an isolated build env would be populated by a pip that
+# _PYTHON_HOST_PLATFORM has convinced it is on TARGET_ARCH. The build venv
+# already has setuptools and wheel, which is all a plain C extension needs.
+cross_wheel() {
+  local v=$1 sdist=$2 out=$3 d="$WORK/pyheaders-$1" w
+  if [ ! -d "$d/root" ]; then
+    mkdir -p "$d/deb"
+    (cd "$d/deb" && "${XAPT[@]}" download "libpython$v-dev" >/dev/null) \
+      || die "no libpython$v-dev for $TARGET_ARCH in SUITES ($SUITES); cannot cross-compile for Python $v"
+    dpkg-deb -x "$d"/deb/*.deb "$d/root"
+  fi
+  [ -f "$d/root/usr/include/$WHEEL_ARCH-linux-gnu/python$v/pyconfig.h" ] \
+    || die "libpython$v-dev for $TARGET_ARCH has no $WHEEL_ARCH-linux-gnu/python$v/pyconfig.h"
+  # -I ahead of the host interpreter's own include dirs, which setuptools
+  # appends; -g0 drops the host CFLAGS' -g (debug info only bloats the .deb).
+  CC="$WORK/cross-cc" LDSHARED="$WORK/cross-cc -shared" \
+  CFLAGS="-I$d/root/usr/include/python$v -I$d/root/usr/include -g0" \
+  _PYTHON_HOST_PLATFORM="linux-$WHEEL_ARCH" \
+  SETUPTOOLS_EXT_SUFFIX=".cpython-${v/./}-$WHEEL_ARCH-linux-gnu.so" \
+    "$WORK/build-cp${v/./}/bin/pip" wheel --quiet --disable-pip-version-check --no-deps \
+      --no-build-isolation --no-cache-dir -w "$out" "$sdist" \
+    || die "could not cross-compile $(basename "$sdist") for $TARGET_ARCH; build this bundle
+     on a $TARGET_ARCH machine instead (see the ARCHITECTURE note at the top)"
+  for w in "$out"/*.whl; do
+    case "$w" in
+      *-linux_"$WHEEL_ARCH".whl) echo "  cross-compiled $(basename "$w")" ;;
+      *) die "cross-compiling $(basename "$sdist") produced $(basename "$w"), not a linux_$WHEEL_ARCH wheel" ;;
+    esac
+  done
+}
+
 # --- backend ------------------------------------------------------------
 log "Backend: c4raven-server @ $SERVER_SHA"
 clone_at "$SERVER_REPO" "$SERVER_SHA" "$WORK/src/server"
@@ -278,7 +360,7 @@ for v in $PY_VERSIONS; do
   "$TOOLS/pip" download --quiet --disable-pip-version-check --no-deps --prefer-binary \
     -r "$PAYLOAD/requirements.txt" -d "$dl" \
     --python-version "$v" --implementation cp --abi "$tag" --abi abi3 --abi none \
-    $(printf -- '--platform %s ' "${PLATFORMS[@]}")
+    "${PLATFORM_FLAGS[@]}"
 
   shopt -s nullglob
   sdists=("$dl"/*.tar.gz "$dl"/*.zip)
@@ -287,25 +369,25 @@ for v in $PY_VERSIONS; do
     echo "building ${#sdists[@]} source-only package(s) with ${PYTHON[$v]}"
     "${PYTHON[$v]}" -m venv "$WORK/build-$tag"
     "$WORK/build-$tag/bin/pip" install --quiet --disable-pip-version-check -U pip setuptools wheel
-    # Record what these builds produce, so the cross-build guard below can
-    # tell a pure-Python sdist (fine anywhere) from a C extension (only
-    # ever valid for the machine that compiled it).
-    before=$(mktemp -p "$WORK"); after=$(mktemp -p "$WORK")
-    find "$dl" -maxdepth 1 -name '*.whl' -printf '%f\n' | sort > "$before"
-    "$WORK/build-$tag/bin/pip" wheel --quiet --disable-pip-version-check --no-deps -w "$dl" "${sdists[@]}"
-    find "$dl" -maxdepth 1 -name '*.whl' -printf '%f\n' | sort > "$after"
-    if [ "$CROSS" = 1 ]; then
-      while read -r b; do
-        case "$b" in
-          *-none-any.whl) ;;
-          *) die "cross-building for $TARGET_ARCH on $HOST_ARCH, but $b had to be
-     compiled from source here, so it is a $HOST_ARCH binary. Build this
-     bundle on a $TARGET_ARCH machine (see the ARCHITECTURE note at the
-     top of this script)." ;;
-        esac
-      done < <(comm -13 "$before" "$after")
-    fi
-    rm -f "$before" "$after" "${sdists[@]}"
+    # One at a time, so each sdist's output is known: a pure-Python one
+    # (py3-none-any) is fine for any target; anything else is a C extension
+    # compiled for THIS machine, which on a cross-build is thrown away and
+    # rebuilt for the target.
+    for sd in "${sdists[@]}"; do
+      out=$(mktemp -d -p "$WORK")
+      "$WORK/build-$tag/bin/pip" wheel --quiet --disable-pip-version-check --no-deps -w "$out" "$sd"
+      if [ "$CROSS" = 1 ]; then
+        for w in "$out"/*.whl; do
+          case "$w" in
+            *-none-any.whl) ;;
+            *) rm -f "$out"/*.whl; cross_wheel "$v" "$sd" "$out"; break ;;
+          esac
+        done
+      fi
+      mv "$out"/*.whl "$dl/"
+      rmdir "$out"
+    done
+    rm -f "${sdists[@]}"
   fi
   mkdir -p "$PAYLOAD/wheelhouse/$tag"
   mv "$dl"/*.whl "$PAYLOAD/wheelhouse/$tag/"
@@ -324,15 +406,26 @@ for f in "$PAYLOAD/wheelhouse/$first"/*.whl; do
   for v in $PY_VERSIONS; do rm -f "$PAYLOAD/wheelhouse/cp${v/./}/$b"; done
 done
 
-# Wheels compiled here are linked against this machine's glibc; make sure
-# none of them needs a newer one than the oldest target release has.
-# (Nothing to check on a cross-build: the guard above has already refused
-# any locally compiled wheel that is not arch-independent.)
-log "Checking glibc requirements of locally built wheels (max $GLIBC_MAX)"
+# Wheels compiled here are linked against this machine's glibc (or, on a
+# cross-build, zig's 2.17 stubs); make sure none of them needs a newer one
+# than the oldest target release has, and that every shared object in them
+# is actually a $WHEEL_ARCH ELF -- the backstop against a host-arch .so
+# slipping into a bundle labelled for another arch.
+log "Checking locally built wheels: $WHEEL_ARCH objects, glibc <= $GLIBC_MAX"
 for w in "$PAYLOAD"/wheelhouse/*/*-linux_"$WHEEL_ARCH".whl; do
   [ -f "$w" ] || continue
   d=$(mktemp -d -p "$WORK")
   python3 -m zipfile -e "$w" "$d"
+  # e_machine is read straight out of the ELF header: the host's objdump
+  # may not know the target's architecture at all (Ubuntu's amd64 binutils
+  # prints "UNKNOWN!" for aarch64), but it still reads the symbol versions.
+  while IFS= read -r -d '' so; do
+    m=$(python3 -c 'import struct, sys
+h = open(sys.argv[1], "rb").read(20)
+print(struct.unpack("<H", h[18:20])[0] if h[:4] == b"\x7fELF" else "not-ELF")' "$so")
+    [ "$m" = "$ELF_MACHINE" ] \
+      || die "$(basename "$w") contains ${so#"$d"/}, which is not a $WHEEL_ARCH object (e_machine $m, want $ELF_MACHINE)"
+  done < <(find "$d" -name '*.so*' -type f -print0)
   need_glibc=$(find "$d" -name '*.so*' -type f -exec objdump -T {} + 2>/dev/null \
     | { grep -oE 'GLIBC_[0-9.]+' || true; } | sed 's/GLIBC_//' | sort -Vu | tail -1)
   rm -rf "$d"
@@ -358,7 +451,7 @@ for v in $PY_VERSIONS; do
       --quiet --disable-pip-version-check --no-index --dry-run --ignore-installed \
       --only-binary=:all: --target "$WORK/verify-$tag/target" \
       --python-version "$v" --implementation cp --abi "$tag" --abi abi3 --abi none \
-      $(printf -- '--platform %s ' "${PLATFORMS[@]}") \
+      "${PLATFORM_FLAGS[@]}" \
       --find-links "$PAYLOAD/wheelhouse/$tag" --find-links "$PAYLOAD/wheelhouse/common" \
       -r "$PAYLOAD/requirements.txt" "$PAYLOAD"/wheelhouse/common/raven-*.whl \
       || die "the Python $v wheelhouse does not resolve for $TARGET_ARCH"

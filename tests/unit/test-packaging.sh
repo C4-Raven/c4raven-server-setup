@@ -51,12 +51,12 @@ case "$HOST" in amd64) OTHER=arm64 ;; arm64) OTHER=amd64 ;; *) OTHER="" ;; esac
 echo "== build-offline.sh: the cross-build refusal"
 # ===========================================================================
 # Two locked dependencies (mutf8 1.0.6 and unishox2-py3 1.0.0) publish no
-# wheel for any supported Python on any arch, so pip compiles them from sdist
-# and the result is a HOST-arch .so no matter what --platform says. A bundle
-# cross-built on an amd64 runner would therefore be labelled arm64 and carry
-# x86-64 objects, and nothing before the customer's install would notice.
-# This refusal is the only thing that prevents that -- including in CI, where
-# it is the reason the arm64 offline bundle must be built on an arm64 runner.
+# wheel for any supported Python on any arch, so they are compiled from sdist,
+# and a plain compile is a HOST-arch .so no matter what --platform says.
+# ALLOW_CROSS_BUILD=1 cross-compiles them for the target (zig) and checks
+# every .so's ELF machine, but cannot import them; a native build can. So a
+# cross-build stays opt-in: the default refuses, and CI must build arm64 on
+# an arm64 runner, where the bundle gets the full install-and-import check.
 if [ ! -f "$REPO_DIR/build-offline.sh" ]; then
   t_no "build-offline.sh exists" "cannot test the cross-build guard without it"
 elif [ -z "$OTHER" ]; then

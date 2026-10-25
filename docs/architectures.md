@@ -72,12 +72,19 @@ So: run `build-offline.sh` unchanged on arm64 hardware, an arm64 cloud
 VM, or `docker run --platform linux/arm64` on a binfmt/qemu-enabled
 host. The script itself is architecture-clean.
 
-`ALLOW_CROSS_BUILD=1` exists for the day `mutf8` and `unishox2-py3` gain
-aarch64 wheels or leave the lock. It is not a way to force a cross-build
-today: the build still hard-fails on any locally compiled wheel that is
-not arch-independent, and it downgrades the "install it and import it"
-check to resolve-only, because foreign-arch wheels cannot be imported
-here. **That path has never produced a bundle anyone has installed.**
+`ALLOW_CROSS_BUILD=1` builds on a foreign host anyway, without qemu or a
+distro cross toolchain. Each sdist is built once natively; any that does
+not produce a `py3-none-any` wheel is rebuilt with zig (`ziglang` from
+PyPI, pinned) as the C compiler, targeting `<arch>-linux-gnu` with
+glibc 2.17 symbol versions, against the target's own CPython headers
+(`libpython3.X-dev` for the target arch, from the same Ubuntu archive
+as the bundle's apt half). The resulting `linux_<arch>` wheels then go
+through the glibc audit plus an ELF `e_machine` check on every `.so`
+in the wheelhouse, which is what catches a host-arch object if anything
+slips through. What it still cannot do is import them: the verify step
+drops to resolve-only. **A cross-built bundle has not yet been installed
+on arm64 hardware** -- smoke-test the first one there (`import raven.app`
+in the installed venv is the quickest check) before shipping it.
 
 ## ports.ubuntu.com
 

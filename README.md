@@ -39,13 +39,14 @@ as a bring-up, not a deployment, and read
 
 Three limits that are structural rather than a to-do list:
 
-- **Offline bundles are built per architecture, on that architecture.**
-  `build-offline.sh` refuses a cross-build. Two locked dependencies
-  (`mutf8` 1.0.6, `unishox2-py3` 1.0.0) publish no wheel for Python
-  3.12/3.13 on any architecture, so every build compiles them from sdist
-  with the host's compiler — an amd64 host would quietly put x86_64
-  `.so` files in a bundle labelled arm64, and the build's own verify step
-  would pass, because it runs on the build host.
+- **Offline bundles are best built on their own architecture.**
+  `build-offline.sh` refuses a cross-build unless `ALLOW_CROSS_BUILD=1`.
+  Two locked dependencies (`mutf8` 1.0.6, `unishox2-py3` 1.0.0) publish
+  no wheel for Python 3.12/3.13 on any architecture, so every build
+  compiles them from sdist. A native build installs and imports the
+  result; a cross-build compiles them with zig for the target and checks
+  each `.so` is the right architecture, but cannot import them — see
+  [`docs/architectures.md`](docs/architectures.md).
 - **An EL9 offline payload cannot be built on Ubuntu** for the same
   reason in the other direction: Rocky 9 is glibc 2.34, Ubuntu 24.04 is
   2.39 and 25.10 is 2.42, so wheels compiled on Ubuntu fail at *import*
@@ -98,11 +99,12 @@ repos, which are private):
 PKG_VERSION=2.2.0 ./build-offline.sh
 ```
 
-It builds for the machine it runs on. `TARGET_ARCH` exists, but setting
-it to anything other than this machine's architecture is refused, for
-the reason in [Supported platforms](#supported-platforms) — to get an
-arm64 bundle, run the same command unchanged on arm64 hardware, an arm64
-cloud VM, or `docker run --platform linux/arm64`. The apt dependencies
+It builds for the machine it runs on. To get an arm64 bundle, run the
+same command unchanged on arm64 hardware, an arm64 cloud VM, or
+`docker run --platform linux/arm64`; or, on amd64, add
+`TARGET_ARCH=arm64 ALLOW_CROSS_BUILD=1`, which cross-compiles the two C
+extensions but can only resolve-check, not import-check, the result (see
+[Supported platforms](#supported-platforms)). The apt dependencies
 come from `archive.ubuntu.com` for amd64 and from `ports.ubuntu.com` for
 everything else, which the script picks automatically;
 `archive.ubuntu.com` has no `binary-arm64` at all and 404s if you point
