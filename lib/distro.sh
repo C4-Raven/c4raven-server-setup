@@ -202,19 +202,29 @@ distro_supported() {
 
 # Refresh metadata and bring the system up to date -- same intent on both
 # families (apt update && apt upgrade).
+# Every apt call goes through here so none of them can stop to ask anything:
+# DEBIAN_FRONTEND=noninteractive for debconf, NEEDRESTART_MODE=a for
+# needrestart's "which services to restart?", --force-confdef/--force-confold
+# for dpkg's "configuration file modified, keep or replace?" (keep the admin's
+# copy). And stdin from /dev/null: under `curl ... | bash` stdin IS the rest
+# of this script, and anything that does read it would swallow the installer.
+# The -o options go last -- apt accepts options anywhere on its command line.
+apt_noninteractive() {
+  _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt "$@" \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold </dev/null
+}
+
 pkg_refresh() {
   case "${DISTRO_FAMILY:-}" in
     rhel) _sudo dnf -y upgrade --refresh ;;
-    # NEEDRESTART_MODE=a: never stop to ask which services to restart, which
-    # would read from the piped script and hang the install.
-    *)    _sudo env DEBIAN_FRONTEND=noninteractive apt update && _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt upgrade -y ;;
+    *)    apt_noninteractive update && apt_noninteractive upgrade -y ;;
   esac
 }
 
 pkg_install() {
   case "${DISTRO_FAMILY:-}" in
     rhel) _sudo dnf install -y "$@" ;;
-    *)    _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt install -y "$@" ;;
+    *)    apt_noninteractive install -y "$@" ;;
   esac
 }
 
@@ -232,7 +242,7 @@ pkg_install() {
 pkg_install_optional() {
   if ! case "${DISTRO_FAMILY:-}" in
          rhel) _sudo dnf install -y "$@" ;;
-         *)    _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt install -y "$@" ;;
+         *)    apt_noninteractive install -y "$@" ;;
        esac
   then
     echo "distro.sh: optional package(s) not installed: $*" >&2
@@ -706,7 +716,7 @@ node_install() {
       ;;
     *)
       curl -fsSL https://deb.nodesource.com/setup_22.x | _sudo_E bash -
-      _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt install -y nodejs
+      apt_noninteractive install -y nodejs
       ;;
   esac
 }

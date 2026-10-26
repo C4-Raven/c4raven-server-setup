@@ -114,6 +114,17 @@ for path in /api/onboard/ /api/onboard/abc123/package.zip /Marti/api/version; do
     || t_no "8080 proxies $path to the backend"
 done
 t_has "$h" 'if ($server_port = 80)' "only port 80 redirects to HTTPS (8080 must stay plain for onboarding)"
+# /api/onboard/<token>: the path is a bearer token, so it must not reach the
+# access log on any listener that proxies /api.
+for f in raven_http raven_https; do
+  n=$(directives "$T/$f" | awk '/location \^~ \/api\/onboard\/ \{/ {inb=1; next}
+      inb && /access_log off;/ {c++; inb=0} inb && /}/ {inb=0} END {print c+0}')
+  want=1; [ "$f" = raven_https ] && want=2   # 443 and 8443
+  t_eq "$n" "$want" "$f: every /api/onboard/ location turns access_log off"
+done
+o=$(locations "$T/raven_http")
+t_true "raven_http: the onboard location precedes the /api regex" -- \
+  awk '/\/api\/onboard\// {o=NR} /\^\/\(api\|Marti\)/ {r=NR} END {exit !(o && r && o < r)}' <<< "$o"
 for f in "$INSTALL" "$POSTINST" "$CONFIGURE"; do
   [ -f "$f" ] || continue
   # The firewall port list is a single command/array spanning a few lines.
@@ -128,17 +139,18 @@ echo "== install paths: the domain block is wired the same way in all three"
 # For each path: the domain block is (1) taken out of certbot's sight BEFORE
 # certbot runs -- certbot installs into the first ssl block whose server_name
 # matches, which would otherwise be it, leaving the web UI on 443 without LE;
-# (2) written only AFTER, and only when live/<domain>/fullchain.pem exists;
+# (2) written only AFTER, and only when certbot's lineage (falling back to
+# live/<domain>) holds a certificate that has not expired;
 # (3) DOMAIN_NAME substituted; (4) checked with nginx -t and backed out if it
 # fails; (5) given the renewal deploy hook.
 check_wiring() {
-  local f=$1 name rm_re rm_ln cb_ln guard_ln tpl_ln
+  local f=$1 name rm_re rm_ln cb_ln guard_ln tpl_ln if_ln
   name=$(basename "$f")
   if [ ! -f "$f" ]; then t_no "$name exists"; return; fi
   rm_re=$2
   rm_ln=$(line_of "$f" "$rm_re")
   cb_ln=$(line_of "$f" 'certbot --nginx -d "\$DOMAIN"')
-  guard_ln=$(line_of "$f" 'test -f "/etc/letsencrypt/live/\$DOMAIN/fullchain.pem"|\[ -f "/etc/letsencrypt/live/\$DOMAIN/fullchain.pem" \]')
+  guard_ln=$(line_of "$f" 'openssl x509 -checkend 0 -noout -in "\$LE_DIR/fullchain.pem"')
   tpl_ln=$(line_of "$f" 'nginx_configs/raven_certificate_enrollment_domain')
   if [ -z "$rm_ln" ] || [ -z "$cb_ln" ] || [ -z "$guard_ln" ] || [ -z "$tpl_ln" ]; then
     t_no "$name: removes, runs certbot, checks the cert, installs the template" \
@@ -147,8 +159,19 @@ check_wiring() {
   fi
   [ "$rm_ln" -lt "$cb_ln" ] && t_ok "$name: domain block removed before certbot runs" \
     || t_no "$name: domain block removed before certbot runs" "rm at $rm_ln, certbot at $cb_ln"
+  # Outside the `if [ -n "$DOMAIN" ]`: clearing the domain must remove it too.
+  if_ln=$(line_of "$f" '^[[:space:]]*if \[ -n "\$DOMAIN" \]; then')
+  [ -n "$if_ln" ] && [ "$rm_ln" -lt "$if_ln" ] \
+    && t_ok "$name: domain block removed even when no domain is set" \
+    || t_no "$name: domain block removed even when no domain is set" "rm at $rm_ln, domain if at ${if_ln:-none}"
+  t_true "$name: asks certbot for the lineage path, falling back to live/<domain>" -- \
+    grep -q 'certbot certificates -d "\$DOMAIN"' "$f"
+  t_true "$name: points the rendered block at that lineage" -- \
+    grep -q 's~/etc/letsencrypt/live/DOMAIN_NAME~\$LE_DIR~g' "$f"
+  t_false "$name: never tells the admin to run certbot --nginx by hand" -- \
+    grep -qE 'run: sudo certbot --nginx' "$f"
   [ "$cb_ln" -lt "$guard_ln" ] && [ "$guard_ln" -lt "$tpl_ln" ] \
-    && t_ok "$name: domain block written after certbot, only if live/<domain>/fullchain.pem exists" \
+    && t_ok "$name: domain block written after certbot, only if its certificate is unexpired" \
     || t_no "$name: domain block written after certbot, behind the cert check" \
             "certbot=$cb_ln guard=$guard_ln template=$tpl_ln"
   t_true "$name: substitutes DOMAIN_NAME with \$DOMAIN" -- grep -q 's~DOMAIN_NAME~\$DOMAIN~g' "$f"

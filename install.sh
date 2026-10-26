@@ -55,7 +55,7 @@ curl -fsSL "$REPO_RAW/lib/distro.sh" -o "$INSTALLER_DIR/distro.sh"
 # the install would get as far as `apt upgrade` before failing on the first
 # absent one. Check the whole surface we rely on before touching the system.
 for _fn in detect_distro distro_supported pkg_refresh pkg_install \
-           pkg_install_optional stack_packages stack_packages_optional \
+           pkg_install_optional apt_noninteractive stack_packages stack_packages_optional \
            setup_extra_repos pg_init node_install firewall_open \
            selinux_fixup nginx_site_file nginx_disable_default_site \
            nginx_enable_site nginx_remove_site; do
@@ -437,18 +437,23 @@ firewall_open 80/tcp 443/tcp 8080/tcp 8443/tcp 8446/tcp 8322/tcp 1936/tcp 8883/t
               8554/tcp 1935/tcp 8189/udp 8890/udp \
               8088/tcp 8089/tcp 8087/udp
 
+# Take the 8446 domain block (written below on a previous run) out of
+# nginx's sight first, and unconditionally: with a domain, it has
+# `server_name $DOMAIN`, and certbot installs into the FIRST ssl block whose
+# server_name matches -- which would be that one, so the web UI on 443 would
+# never get its own LE block; without one (domain cleared on a re-run), it
+# must not keep serving a stale name. The restart below picks this up.
+nginx_remove_site raven_certificate_enrollment_domain
+
 sudo systemctl enable nginx
 sudo systemctl restart nginx
 
 if [ -n "$DOMAIN" ]; then
-  # Take the 8446 domain block (written below on a previous run) out of
-  # nginx's sight first: it has `server_name $DOMAIN`, and certbot installs
-  # into the FIRST ssl block whose server_name matches -- which would be that
-  # one, so the web UI on 443 would never get its own LE block.
-  nginx_remove_site raven_certificate_enrollment_domain
   echo "${GREEN}Requesting a Let's Encrypt certificate for ${DOMAIN}...${NC}"
+  # Not `certbot --nginx` by hand on failure: that would pick its own block
+  # (possibly the 8446 one) -- re-running the installer redoes it in order.
   sudo certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect || \
-    echo "${YELLOW}certbot failed -- check that ${DOMAIN} already resolves to this server's public IP, then run: sudo certbot --nginx -d ${DOMAIN}${NC}"
+    echo "${YELLOW}certbot failed -- check that ${DOMAIN} already resolves to this server's public IP, then re-run this installer.${NC}"
 
   # Port 8446 for domain users (ATAK Quick Connect): a `server_name $DOMAIN`
   # block with the LE certificate, next to raven_certificate_enrollment's
@@ -456,11 +461,19 @@ if [ -n "$DOMAIN" ]; then
   # a certificate actually exists -- a block pointing at a missing file would
   # stop nginx from loading at all. A certificate from an earlier run counts:
   # a transient certbot failure here should not take Quick Connect away.
+  # The lineage is certbot's to name (live/<domain>-0001 after a re-issue
+  # with a changed domain set), so ask it, falling back to live/<domain>;
+  # and an expired certificate is no better than none.
   # KEEP IN STEP with debian/c4raven-server.postinst and rpm/configure.sh.
-  if sudo test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
+  LE_DIR="/etc/letsencrypt/live/$DOMAIN"
+  LE_CERT=$(sudo certbot certificates -d "$DOMAIN" 2>/dev/null \
+            | sed -n 's/^[[:space:]]*Certificate Path:[[:space:]]*//p' | sed -n 1p || true)
+  [ -n "$LE_CERT" ] && LE_DIR=$(dirname "$LE_CERT")
+  if sudo openssl x509 -checkend 0 -noout -in "$LE_DIR/fullchain.pem" >/dev/null 2>&1; then
     sudo curl -fsSL "$REPO_RAW/nginx_configs/raven_certificate_enrollment_domain" \
       -o "$(nginx_site_file raven_certificate_enrollment_domain)"
-    sudo sed -i "s~DOMAIN_NAME~$DOMAIN~g" "$(nginx_site_file raven_certificate_enrollment_domain)"
+    sudo sed -i -e "s~/etc/letsencrypt/live/DOMAIN_NAME~$LE_DIR~g" -e "s~DOMAIN_NAME~$DOMAIN~g" \
+      "$(nginx_site_file raven_certificate_enrollment_domain)"
     nginx_enable_site raven_certificate_enrollment_domain
     # Renewal repoints the live/ symlinks; nginx only reads them on (re)load.
     # certbot's nginx installer already reloads after a renewal, but this
@@ -477,7 +490,7 @@ if [ -n "$DOMAIN" ]; then
       sudo systemctl reload nginx || true
     fi
   else
-    echo "${YELLOW}No Let's Encrypt certificate for ${DOMAIN} yet, so port 8446 serves only Raven's own certificate (VPN/IP onboarding works; domain Quick Connect does not). Re-run this installer once certbot succeeds.${NC}"
+    echo "${YELLOW}No valid Let's Encrypt certificate for ${DOMAIN} yet, so port 8446 serves only Raven's own certificate (VPN/IP onboarding works; domain Quick Connect does not). Re-run this installer once certbot succeeds.${NC}"
   fi
 fi
 
@@ -653,12 +666,12 @@ if [ "$FEDHUB_AVAILABLE" = true ] && ask_yn "Do you already have a takserver-fed
     curl -fsSL "https://www.mongodb.org/static/pgp/server-$MONGO_VER.asc" | sudo gpg --dearmor --yes -o "/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg"
     echo "deb [signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg] $MONGO_REPO" | \
       sudo tee "/etc/apt/sources.list.d/mongodb-org-$MONGO_VER.list" > /dev/null
-    sudo apt update
-    sudo apt install -y mongodb-org
+    apt_noninteractive update
+    pkg_install mongodb-org
     sudo systemctl enable --now mongod
 
     echo "${GREEN}Installing Federation Hub...${NC}"
-    sudo apt install -y "$FEDHUB_DEB"
+    pkg_install "$FEDHUB_DEB"
 
     run_as_app "$PYTHON_BIN - << 'PYEOF'
 import yaml

@@ -54,6 +54,18 @@ server {
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         }
 
+        # The onboarding URL's path is a bearer token: keep it out of the
+        # access log. Otherwise proxied exactly like /api below.
+        location ^~ /api/onboard/ {
+                access_log off;
+                proxy_pass http://127.0.0.1:8081;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host:443;
+                proxy_set_header X-Forwarded-For $remote_addr;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Ssl-Cert $ssl_client_escaped_cert;
+        }
+
         location /api {
                 proxy_pass http://127.0.0.1:8081;
                 proxy_http_version 1.1;
@@ -102,6 +114,17 @@ server {
                 proxy_set_header X-Forwarded-For $remote_addr;
                 proxy_set_header X-Forwarded-Proto $scheme;
                 proxy_set_header X-Ssl-Cert $ssl_client_escaped_cert;
+        }
+
+        # Same as on 443: the onboarding token stays out of the access log.
+        location ^~ /api/onboard/ {
+            access_log off;
+            proxy_pass http://127.0.0.1:8081;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host:8443;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Ssl-Cert $ssl_client_escaped_cert;
         }
 
         location /api {

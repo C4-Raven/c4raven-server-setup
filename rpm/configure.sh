@@ -710,19 +710,24 @@ if [ "${RAVEN_OPEN_FIREWALL,,}" = "true" ]; then
                 8189/udp 8890/udp 8087/udp
 fi
 
+# Take the 8446 domain block (written below on a previous run) out of nginx's
+# sight first, and unconditionally: with a domain, it has `server_name
+# $DOMAIN`, and certbot installs into the FIRST ssl block whose server_name
+# matches -- that one -- so the web UI on 443 would never get its own LE
+# block; with RAVEN_DOMAIN cleared, it must not keep serving a stale name.
+# The restart below picks this up.
+rm -f "$NGINX_SITES_DIR/raven_certificate_enrollment_domain.conf"
+
 systemctl enable nginx
 systemctl restart nginx
 
 if [ -n "$DOMAIN" ]; then
-  # Take the 8446 domain block (written below on a previous run) out of nginx's
-  # sight first: it has `server_name $DOMAIN`, and certbot installs into the
-  # FIRST ssl block whose server_name matches -- that one -- so the web UI on
-  # 443 would never get its own LE block.
-  rm -f "$NGINX_SITES_DIR/raven_certificate_enrollment_domain.conf"
   echo "Requesting a Let's Encrypt certificate for ${DOMAIN}..."
+  # Not `certbot --nginx` by hand on failure: that would pick its own block
+  # (possibly the 8446 one) -- c4raven-setup redoes it in order.
   certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
     -m "${RAVEN_CERTBOT_EMAIL:-admin@${DOMAIN}}" --redirect || \
-    echo "certbot failed -- check that ${DOMAIN} already resolves to this server's public IP, then run: sudo certbot --nginx -d ${DOMAIN}"
+    echo "certbot failed -- check that ${DOMAIN} already resolves to this server's public IP, then run: sudo c4raven-setup"
 
   # Port 8446 for domain users (ATAK Quick Connect): a `server_name $DOMAIN`
   # block with the LE certificate, beside raven_certificate_enrollment's
@@ -731,9 +736,17 @@ if [ -n "$DOMAIN" ]; then
   # loading at all; one from an earlier run counts. Always re-rendered (never
   # certbot-modified: certbot cannot see it). The LE files under
   # /etc/letsencrypt are already cert_t, so SELinux needs nothing extra.
+  # The lineage is certbot's to name (live/<domain>-0001 after a re-issue with
+  # a changed domain set), so ask it, falling back to live/<domain>; and an
+  # expired certificate is no better than none.
   # KEEP IN STEP with install.sh and debian/c4raven-server.postinst.
-  if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
-    sed "s~DOMAIN_NAME~$DOMAIN~g" "$PKGDATA/nginx_configs/raven_certificate_enrollment_domain" \
+  LE_DIR="/etc/letsencrypt/live/$DOMAIN"
+  LE_CERT=$(certbot certificates -d "$DOMAIN" 2>/dev/null \
+            | sed -n 's/^[[:space:]]*Certificate Path:[[:space:]]*//p' | sed -n 1p || true)
+  [ -n "$LE_CERT" ] && LE_DIR=$(dirname "$LE_CERT")
+  if openssl x509 -checkend 0 -noout -in "$LE_DIR/fullchain.pem" >/dev/null 2>&1; then
+    sed -e "s~/etc/letsencrypt/live/DOMAIN_NAME~$LE_DIR~g" -e "s~DOMAIN_NAME~$DOMAIN~g" \
+      "$PKGDATA/nginx_configs/raven_certificate_enrollment_domain" \
       > "$NGINX_SITES_DIR/raven_certificate_enrollment_domain.conf"
     chmod 644 "$NGINX_SITES_DIR/raven_certificate_enrollment_domain.conf"
     # Renewal repoints the live/ symlinks; nginx only reads them on (re)load.
@@ -751,7 +764,7 @@ if [ -n "$DOMAIN" ]; then
       systemctl reload nginx || true
     fi
   else
-    echo "No Let's Encrypt certificate for ${DOMAIN} yet, so port 8446 serves only Raven's own certificate (VPN/IP onboarding works; domain Quick Connect does not). Re-run c4raven-setup once certbot succeeds."
+    echo "No valid Let's Encrypt certificate for ${DOMAIN} yet, so port 8446 serves only Raven's own certificate (VPN/IP onboarding works; domain Quick Connect does not). Re-run c4raven-setup once certbot succeeds."
   fi
   # Debian's certbot enables its renewal timer on install; EPEL's ships
   # certbot-renew.timer disabled, and the certificate would lapse in 90 days.

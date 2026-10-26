@@ -401,6 +401,12 @@ log=$(sandbox_log)
 t_has "$log" "apt install -y nginx openssl" "debian pkg_install shells out to apt"
 t_has "$log" "NEEDRESTART_MODE=a" "debian pkg_install sets NEEDRESTART_MODE=a (else apt blocks on a prompt)"
 t_hasnt "$log" " dnf " "debian pkg_install never touches dnf"
+t_has "$log" "Dpkg::Options::=--force-confold" "debian pkg_install keeps modified conffiles without asking (--force-confold)"
+t_has "$log" "Dpkg::Options::=--force-confdef" "debian pkg_install takes dpkg's default where there is one (--force-confdef)"
+t_true "every apt call goes through apt_noninteractive (stdin from /dev/null)" -- \
+  bash -c "! grep -nE '(^|[^_[:alnum:]])apt (install|update|upgrade)' '$REPO_DIR/lib/distro.sh' '$REPO_DIR/install.sh' | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' | grep -q ."
+t_true "apt_noninteractive reads stdin from /dev/null" -- \
+  grep -q 'force-confold </dev/null' "$REPO_DIR/lib/distro.sh"
 
 sandbox_log_reset
 probe rocky-9 x86_64 'pkg_install nginx openssl' >/dev/null
@@ -413,6 +419,8 @@ probe ubuntu-24.04 x86_64 'pkg_refresh' >/dev/null
 log=$(sandbox_log)
 t_has "$log" "apt update" "debian pkg_refresh runs apt update"
 t_has "$log" "apt upgrade -y" "debian pkg_refresh runs apt upgrade"
+t_has "$log" "apt upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold" \
+      "debian pkg_refresh's upgrade never stops at a conffile prompt"
 sandbox_log_reset
 probe rocky-9 x86_64 'pkg_refresh' >/dev/null
 t_has "$(sandbox_log)" "dnf -y upgrade --refresh" "rhel pkg_refresh runs dnf upgrade --refresh"
