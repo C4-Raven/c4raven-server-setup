@@ -59,6 +59,10 @@
 #
 # Optional overrides:
 #   SERVER_SHA / UI_SHA   commits to package (default: each repo's main tip)
+#   SERVER_SRC            package this local c4raven-server checkout, working
+#                         tree as-is (uncommitted changes included), instead
+#                         of cloning SERVER_SHA from GitHub -- for testing a
+#                         backend change before it is pushed. Not for releases.
 #   PLUGIN_APK            plugin APK to bundle (default: the newest APK in
 #                         c4raven-clear-plugin's releases/ at its main tip)
 #   ALLOW_DEV_SIGNED_PLUGIN=1  accept a plugin not signed by the TAK Product
@@ -218,6 +222,13 @@ for v in $PY_VERSIONS; do
   PYTHON[$v]=$(find_python "$v") || die "no python$v found on PATH or via 'uv python find $v'"
 done
 
+SERVER_SRC="${SERVER_SRC:-}"
+if [ -n "$SERVER_SRC" ]; then
+  SERVER_SRC=$(cd "$SERVER_SRC" && pwd) || die "SERVER_SRC: no such directory"
+  [ -f "$SERVER_SRC/pyproject.toml" ] || die "SERVER_SRC=$SERVER_SRC is not a c4raven-server checkout"
+  SERVER_SHA=$(git -C "$SERVER_SRC" rev-parse HEAD) || die "SERVER_SRC=$SERVER_SRC is not a git checkout"
+  [ -z "$(git -C "$SERVER_SRC" status --porcelain)" ] || SERVER_SHA="$SERVER_SHA-dirty"
+fi
 SERVER_SHA="${SERVER_SHA:-$(git ls-remote "$SERVER_REPO" refs/heads/main | cut -f1)}"
 UI_SHA="${UI_SHA:-$(git ls-remote "$UI_REPO" refs/heads/main | cut -f1)}"
 [ -n "$SERVER_SHA" ] && [ -n "$UI_SHA" ] || die "could not resolve the main tips (git access to C4-Raven?)"
@@ -231,6 +242,50 @@ clone_at() {
   local url=$1 sha=$2 dest=$3
   git clone --quiet --filter=blob:none --no-checkout "$url" "$dest"
   git -C "$dest" -c advice.detachedHead=false checkout --quiet "$sha"
+}
+
+# vendor_file_reqs REQS WHEELHOUSE INDEX_REQS
+# A dependency that is not on PyPI (adsbxcot and aiscot were deleted from
+# it) is vendored in c4raven-server as a wheel and declared as a path
+# dependency, which `poetry export` writes as `name @ file:///<this host's
+# checkout>/vendor/<wheel>`. That path means nothing on the target. Copy each
+# such wheel into WHEELHOUSE and rewrite its line, in place, to a plain
+# `name==version` pin (marker kept) that --no-index --find-links resolves.
+# INDEX_REQS gets every OTHER line: the ones for `pip download` to fetch from
+# PyPI. Vendored names are kept out of it on purpose -- a name deleted from
+# PyPI can be re-registered by anyone, and must never be fetched from there.
+# Only pure-Python wheels are accepted, since WHEELHOUSE serves every target.
+vendor_file_reqs() {
+  local reqs=$1 dest=$2 index=$3 line name url path whl ver marker out
+  out=$(mktemp)
+  : > "$index"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *" @ file:"*) ;;
+      *" @ "*) rm -f "$out"; die "unsupported URL requirement in poetry export: $line" ;;
+      *) printf '%s\n' "$line" >> "$out"; printf '%s\n' "$line" >> "$index"; continue ;;
+    esac
+    name=${line%% @ *}
+    url=${line#* @ }; url=${url%%;*}; url=${url%"${url##*[! ]}"}
+    marker=""; case "$line" in *";"*) marker=" ;${line#*;}" ;; esac
+    path=${url#file://}
+    whl=$(basename "$path")
+    case "$whl" in
+      *-none-any.whl) ;;
+      *.whl) rm -f "$out"; die "vendored $name is $whl, not a pure-Python wheel; it cannot go in wheelhouse/common" ;;
+      *) rm -f "$out"; die "file requirement $name -> $url is not a wheel; vendor a built .whl" ;;
+    esac
+    [ -f "$path" ] || { rm -f "$out"; die "vendored wheel for $name not found: $path"; }
+    # <dist>-<version>[-<build>]-<py>-<abi>-<plat>.whl; dist is normalised to _.
+    [ "$(echo "${whl%%-*}" | tr 'A-Z.-' 'a-z__')" = "$(echo "${name%%[*}" | tr 'A-Z.-' 'a-z__')" ] \
+      || { rm -f "$out"; die "vendored wheel $whl does not match requirement name $name"; }
+    ver=${whl#*-}; ver=${ver%%-*}
+    cp "$path" "$dest/$whl"
+    printf '%s==%s%s\n' "$name" "$ver" "$marker" >> "$out"
+    echo "  vendored $whl -> $name==$ver"
+  done < "$reqs"
+  mv "$out" "$reqs"
+  if grep -q 'file:' "$reqs"; then die "file: requirements survived the vendoring rewrite"; fi
 }
 
 # --- build tools --------------------------------------------------------
@@ -326,12 +381,19 @@ cross_wheel() {
 
 # --- backend ------------------------------------------------------------
 log "Backend: c4raven-server @ $SERVER_SHA"
-clone_at "$SERVER_REPO" "$SERVER_SHA" "$WORK/src/server"
+if [ -n "$SERVER_SRC" ]; then
+  echo "  from the local working tree $SERVER_SRC"
+  cp -a "$SERVER_SRC" "$WORK/src/server"
+  git -C "$WORK/src/server" clean -fdqX   # drop ignored files (.venv, caches)
+else
+  clone_at "$SERVER_REPO" "$SERVER_SHA" "$WORK/src/server"
+fi
 (
   cd "$WORK/src/server"
   "$TOOLS/poetry" check --lock >/dev/null || die "poetry.lock is out of date with pyproject.toml"
   "$TOOLS/poetry" export --without-hashes -f requirements.txt -o "$PAYLOAD/requirements.txt"
 )
+vendor_file_reqs "$PAYLOAD/requirements.txt" "$PAYLOAD/wheelhouse/common" "$WORK/requirements-index.txt"
 # The package version doubles as the backend's version stamp: there are no
 # git tags in c4raven-server for poetry-dynamic-versioning to derive one from.
 POETRY_DYNAMIC_VERSIONING_BYPASS="$PKG_VERSION" \
@@ -347,6 +409,46 @@ for w in "$PAYLOAD"/wheelhouse/common/raven-*.whl; do
     *) die "$(basename "$w") is arch-specific; the backend is assumed pure Python" ;;
   esac
 done
+# poetry-core writes the vendored path dependencies into the backend wheel's
+# METADATA as `Requires-Dist: adsbxcot @ file:///<this host's checkout>/...`.
+# The installers use --no-deps for it, but a wheel that names a build-host
+# path is still wrong to ship (and the cross-build verify resolves its deps):
+# pin each one to the version of the wheel it names, as vendor_file_reqs did
+# for requirements.txt, and fix the METADATA line in RECORD to match.
+for w in "$PAYLOAD"/wheelhouse/common/raven-*.whl; do
+  python3 - "$w" <<'EOF' || die "could not rewrite the file: requirements in $(basename "$w")"
+import base64, hashlib, os, re, sys, zipfile
+whl = sys.argv[1]
+with zipfile.ZipFile(whl) as z:
+    infos = z.infolist()
+    data = {i.filename: z.read(i) for i in infos}
+meta = next(n for n in data if re.fullmatch(r"[^/]+\.dist-info/METADATA", n))
+record = meta[: -len("METADATA")] + "RECORD"
+def pin(m):
+    name, url, marker = m.group(1), m.group(2), m.group(3) or ""
+    f = os.path.basename(url)
+    if not f.endswith("-none-any.whl"):
+        sys.exit(f"{name} -> {url} is not a pure-Python wheel")
+    print(f"  {os.path.basename(whl)}: {name} @ {f} -> {name}=={f.split('-')[1]}")
+    return f"Requires-Dist: {name}=={f.split('-')[1]}{marker}"
+text = data[meta].decode()
+new = re.sub(r"^Requires-Dist: ([A-Za-z0-9._\[\],-]+) @ (file:[^ ;\n]+) *(;[^\n]*)?$", pin, text, flags=re.M)
+if re.search(r"^Requires-Dist: .* @ file:", new, flags=re.M):
+    sys.exit("a file: URL survived in " + meta)
+if new == text:
+    sys.exit(0)
+data[meta] = new.encode()
+digest = base64.urlsafe_b64encode(hashlib.sha256(data[meta]).digest()).rstrip(b"=").decode()
+data[record] = "".join(
+    f"{meta},sha256={digest},{len(data[meta])}\n" if line.split(",")[0] == meta else line + "\n"
+    for line in data[record].decode().splitlines()).encode()
+tmp = whl + ".tmp"
+with zipfile.ZipFile(tmp, "w") as z:
+    for i in infos:
+        z.writestr(i, data[i.filename], compress_type=i.compress_type)
+os.replace(tmp, whl)
+EOF
+done
 
 # --- dependency wheels, per Python version ------------------------------
 for v in $PY_VERSIONS; do
@@ -358,7 +460,7 @@ for v in $PY_VERSIONS; do
   # --prefer-binary: take a wheel wherever PyPI has one for this target,
   # and fall back to the sdist (built below) only where it doesn't.
   "$TOOLS/pip" download --quiet --disable-pip-version-check --no-deps --prefer-binary \
-    -r "$PAYLOAD/requirements.txt" -d "$dl" \
+    -r "$WORK/requirements-index.txt" -d "$dl" \
     --python-version "$v" --implementation cp --abi "$tag" --abi abi3 --abi none \
     "${PLATFORM_FLAGS[@]}"
 

@@ -132,6 +132,54 @@ else
 fi
 
 # ===========================================================================
+echo "== build-offline.sh: vendored file: requirements become name==version pins"
+# poetry export writes a path dependency as `name @ file:///<build host>/...`;
+# that path does not exist on the target. Run the real function, extracted
+# from the script, over a requirements file in poetry's exact format.
+VF="$WORK/vendor_file_reqs.sh"
+[ -f "$REPO_DIR/build-offline.sh" ] && sed -n '/^vendor_file_reqs() {$/,/^}$/p' "$REPO_DIR/build-offline.sh" > "$VF"
+if ! [ -s "$VF" ]; then
+  t_no "build-offline.sh's vendor_file_reqs could be extracted" \
+       "the function was renamed or reshaped; this test can no longer exercise it"
+else
+  vf_run() {  # vf_run REQS WHEELHOUSE INDEX -- in a subshell, so die only ends it
+    ( die() { echo "error: $*" >&2; exit 1; }
+      # shellcheck source=/dev/null
+      . "$VF"; vendor_file_reqs "$@" ) 2>&1
+  }
+  mkdir -p "$WORK/vend/src" "$WORK/vend/wh"
+  : > "$WORK/vend/src/adsbxcot-6.0.4-py3-none-any.whl"
+  : > "$WORK/vend/src/Ai.SCot-7.0.10-py3-none-any.whl"
+  M='python_version >= "3.10" and python_version < "3.15"'
+  {
+    echo "adsbxcot @ file://$WORK/vend/src/adsbxcot-6.0.4-py3-none-any.whl ; $M"
+    echo "aiohttp==3.13.3 ; $M"
+    echo "ai-scot @ file://$WORK/vend/src/Ai.SCot-7.0.10-py3-none-any.whl"
+  } > "$WORK/vend/req.txt"
+  if out=$(vf_run "$WORK/vend/req.txt" "$WORK/vend/wh" "$WORK/vend/index.txt"); then
+    t_ok "vendor_file_reqs accepts poetry's file: wheel lines"
+    t_hasnt "$(cat "$WORK/vend/req.txt")" "file:" "no file: URL is left in the shipped requirements.txt"
+    t_eq "$(sed -n 1p "$WORK/vend/req.txt")" "adsbxcot==6.0.4 ; $M" "a file: wheel becomes name==version, marker kept"
+    t_eq "$(sed -n 2p "$WORK/vend/req.txt")" "aiohttp==3.13.3 ; $M" "an index requirement passes through unchanged"
+    t_eq "$(sed -n 3p "$WORK/vend/req.txt")" "ai-scot==7.0.10" "a line with no marker gets none; a non-normalised wheel name still matches"
+    t_true "the vendored wheel is copied into the wheelhouse" test -f "$WORK/vend/wh/adsbxcot-6.0.4-py3-none-any.whl"
+    t_eq "$(cat "$WORK/vend/index.txt")" "aiohttp==3.13.3 ; $M" "vendored names are kept out of what pip download fetches from PyPI"
+  else
+    t_no "vendor_file_reqs accepts poetry's file: wheel lines" "$out"
+  fi
+  for bad in "sdist:foo @ file://$WORK/vend/src/foo-1.0.tar.gz" \
+             "dir:foo @ file://$WORK/vend/src" \
+             "platform wheel:foo @ file://$WORK/vend/src/foo-1.0-cp312-cp312-linux_x86_64.whl" \
+             "missing wheel:foo @ file://$WORK/vend/src/foo-1.0-py3-none-any.whl" \
+             "name mismatch:bar @ file://$WORK/vend/src/adsbxcot-6.0.4-py3-none-any.whl"; do
+    echo "${bad#*:}" > "$WORK/vend/bad.txt"
+    out=$(vf_run "$WORK/vend/bad.txt" "$WORK/vend/wh" "$WORK/vend/index.txt") \
+      && t_no "vendor_file_reqs refuses a ${bad%%:*} file: requirement" "it exited 0: $(cat "$WORK/vend/bad.txt")" \
+      || t_has "$out" "error:" "vendor_file_reqs refuses a ${bad%%:*} file: requirement"
+  done
+fi
+
+# ===========================================================================
 echo "== the contract between build-offline.sh and build-deb.sh"
 # ===========================================================================
 # build-offline.sh writes the line; build-deb.sh parses it with
