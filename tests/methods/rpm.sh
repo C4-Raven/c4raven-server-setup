@@ -59,7 +59,10 @@ say "configuring the EL9 repositories (rpm/c4raven-el9-repos.sh)"
 bash "$REPO/rpm/c4raven-el9-repos.sh" || exit 1
 
 say "installing the package"
-dnf -y install "${RPMS[@]}"
+# -x 'proj-data-*': the per-country PROJ datum grids (~760 MB, 318 MB of it
+# proj-data-us) arrive as weak deps of the Recommends: postgis. Nothing here
+# reprojects coordinates, and fetching them took 50 of a 55-minute CI run.
+dnf -y install -x 'proj-data-*' "${RPMS[@]}"
 rc=$?
 say "dnf install exited $rc"
 exit "$rc"

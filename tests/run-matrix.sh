@@ -251,8 +251,15 @@ collect() {
     > "$out/failed-units.log" 2>&1 || true
   "$ENGINE" exec "$name" sh -c 'cat /opt/raven/data/logs/raven.log 2>/dev/null' \
     > "$out/raven.log" 2>&1 || true
+  # cot_parser logs only here (its stdout is near silent).
+  "$ENGINE" exec "$name" sh -c 'cat /opt/raven/data/logs/cot_parser.log 2>/dev/null' \
+    > "$out/cot_parser.log" 2>&1 || true
   "$ENGINE" exec "$name" sh -c 'cat /var/log/nginx/error.log 2>/dev/null' \
     > "$out/nginx-error.log" 2>&1 || true
+  # mediamtx.yml sends its log to this file, not the journal, so a mediamtx
+  # that exits is otherwise unexplained.
+  "$ENGINE" exec "$name" sh -c 'tail -n 200 /opt/raven/data/mediamtx/mediamtx.log 2>/dev/null' \
+    > "$out/mediamtx.log" 2>&1 || true
   # EL's postmaster hands its output to the logging collector before it
   # reports a startup FATAL, so the journal only ever says "exit 1".
   "$ENGINE" exec "$name" sh -c 'tail -n 200 /var/lib/pgsql/initdb_postgresql.log \

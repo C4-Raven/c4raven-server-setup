@@ -9,6 +9,10 @@ script runs, because the database tables are only created by the
 migrations the server itself applies on startup -- so by the time this
 runs, that default account normally already exists.
 
+The server also creates a disabled system account for Federation Hub
+(RAVEN_FEDHUB_FEDERATE_USERNAME, `Server` by default) on every start. Nobody
+logs in as it, so it is left out of the counting below.
+
 This script therefore does one of three things, and nothing else:
 
   * no users yet (server not started, or migrations ran without main()):
@@ -50,12 +54,17 @@ ADMIN_PASSWORD = "password"
 WAIT_SECONDS = 120
 
 
+def is_system_account(user):
+    """The disabled Federation Hub account the server creates alongside ours."""
+    return not user.active and user.username == app.config.get("RAVEN_FEDHUB_FEDERATE_USERNAME")
+
+
 def wait_for_tables():
     """The migrations run inside the server on startup; poll until `user` exists."""
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
         try:
-            return User.query.all()
+            return [u for u in User.query.all() if not is_system_account(u)]
         except (ProgrammingError, OperationalError):
             db.session.rollback()
             if time.monotonic() > deadline:

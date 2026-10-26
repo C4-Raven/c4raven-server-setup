@@ -805,7 +805,8 @@ else
   # EL9's module nodejs ships no corepack, and npm is a separate package
   # (the spec Recommends it). Not `dnf install npm` from here: this runs in
   # %posttrans, inside the transaction that holds the rpmdb lock.
-  if ! command -v corepack >/dev/null 2>&1; then
+  COREPACK=$(command -v corepack 2>/dev/null || true)
+  if [ -z "$COREPACK" ]; then
     if ! command -v npm >/dev/null 2>&1; then
       echo "npm is needed to install corepack (which builds the UI) but is not installed." >&2
       echo "Install it and re-run the setup:" >&2
@@ -814,12 +815,16 @@ else
       exit 1
     fi
     npm install -g corepack
+    # By its full path: npm's global prefix on EL is /usr/local, and
+    # /usr/local/bin is on neither rpm's scriptlet PATH nor the app user's
+    # login PATH (EL's /etc/profile adds it for nobody).
+    COREPACK="$(npm prefix -g)/bin/corepack"
   fi
   # c4raven-ui pins yarn 4 (packageManager in package.json) -- npm doesn't
   # understand its lockfile and will silently downgrade/corrupt it.
   # `corepack yarn` runs the pinned version directly.
-  run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn install --immutable"
-  run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
+  run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn install --immutable"
+  run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn build"
   # Deploy as root: whatever previously owned files are in the webroot might not
   # be deletable by $APP_USER even though the directory is world-writable
   # (confirmed live against a server whose webroot had www-data-owned files).

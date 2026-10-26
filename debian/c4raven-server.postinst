@@ -57,8 +57,9 @@ case "$1" in
     # raven` call on a fresh box dies with "libpq library not found".
     # A bare `ldconfig` is no use: inside a maintainer script, libc-bin's
     # /sbin/ldconfig wrapper only queues that same deferred trigger and
-    # exits 0. LDCONFIG_TRIGGER_FORCE makes it rebuild the cache now.
-    LDCONFIG_TRIGGER_FORCE=1 ldconfig
+    # exits 0. LDCONFIG_NOTRIGGER (the wrapper's documented opt-out) makes
+    # it exec ldconfig.real and rebuild the cache now.
+    LDCONFIG_NOTRIGGER=1 ldconfig
 
     echo "Setting up the dedicated '$APP_USER' account..."
     if ! id "$APP_USER" &>/dev/null; then

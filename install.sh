@@ -181,9 +181,13 @@ node_install
 # corepack runs the yarn version c4raven-ui pins; NodeSource ships it, but
 # make sure, since a distro node may not -- and on EL the distro node splits
 # npm into its own package, so `sudo npm` may not exist to install it with.
-if ! command -v corepack >/dev/null 2>&1; then
+COREPACK=$(command -v corepack 2>/dev/null || true)
+if [ -z "$COREPACK" ]; then
   command -v npm >/dev/null 2>&1 || pkg_install npm
   sudo npm install -g corepack
+  # By its full path: npm's global prefix is /usr/local, and EL's sudo
+  # secure_path (which run_as_app runs under) leaves /usr/local/bin out.
+  COREPACK="$(sudo npm prefix -g)/bin/corepack"
 fi
 
 echo "${GREEN}Setting up the dedicated '$APP_USER' account...${NC}"
@@ -349,6 +353,8 @@ sudo sed -i \
 sudo sed -i "s~^webrtcAdditionalHosts: \[\]~webrtcAdditionalHosts: [${DOMAIN:-$(hostname -I | awk '{print $1}')}]~" \
   "$DATA_DIR/mediamtx/mediamtx.yml"
 
+# Restart=always, not on-failure: mediamtx exits 0 when a hot reload of
+# mediamtx.yml fails, which on-failure treats as a clean stop.
 sudo tee /etc/systemd/system/mediamtx.service >/dev/null << EOF
 [Unit]
 Wants=network.target
@@ -356,7 +362,7 @@ After=network.target
 [Service]
 User=$APP_USER
 ExecStart=$DATA_DIR/mediamtx/mediamtx $DATA_DIR/mediamtx/mediamtx.yml
-Restart=on-failure
+Restart=always
 RestartSec=5s
 [Install]
 WantedBy=multi-user.target
@@ -533,8 +539,8 @@ fi
 # (which needs root to symlink into /usr/bin).
 # COREPACK_ENABLE_DOWNLOAD_PROMPT=0: never stop to ask before downloading
 # the pinned yarn (a prompt here would read from the piped script).
-run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn install --immutable"
-run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn build"
+run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn install --immutable"
+run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn build"
 # Deploy as root, not as $APP_USER: whatever previously owned files are in
 # the webroot (a from-scratch install won't have any, but a re-run or a
 # webroot that predates this script easily can, e.g. www-data from a

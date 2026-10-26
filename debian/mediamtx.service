@@ -4,7 +4,9 @@ After=network.target
 [Service]
 User=raven
 ExecStart=/opt/raven/data/mediamtx/mediamtx /opt/raven/data/mediamtx/mediamtx.yml
-Restart=on-failure
+# always, not on-failure: mediamtx exits 0 when a hot reload of its
+# config fails, which on-failure treats as a clean stop.
+Restart=always
 RestartSec=5s
 [Install]
 WantedBy=multi-user.target

@@ -156,7 +156,10 @@ section "Configuration"
 # ---------------------------------------------------------------------------
 if [ -f "$DATA_DIR/config.yml" ]; then
   pass "config.yml exists"
-  DB_URI=$(python3 - "$DATA_DIR/config.yml" <<'PY' 2>/dev/null
+  # The backend's own interpreter: EL9's system python3 has no PyYAML.
+  YAML_PY=python3
+  [ -n "$VENV" ] && [ -x "$VENV/bin/python" ] && YAML_PY=$VENV/bin/python
+  DB_URI=$("$YAML_PY" - "$DATA_DIR/config.yml" <<'PY' 2>/dev/null
 import sys, yaml
 print(yaml.safe_load(open(sys.argv[1])).get("SQLALCHEMY_DATABASE_URI", ""))
 PY
@@ -288,7 +291,10 @@ want_port() {
 want_port 8081 "raven HTTP API"
 want_port 8088 "eud_handler TCP streaming"
 want_port 8089 "eud_handler_ssl"
-want_port 8087 "eud_handler UDP CoT (udp)"
+# Not 8087/udp: eud_handler serves TCP, SSL or UDP per process (--ssl/--udp)
+# and no installer creates an `eud_handler --udp` unit -- nothing binds it on
+# a real server either. The firewall still opens it for a UDP unit an admin
+# adds by hand.
 want_port 80   "nginx HTTP redirect"
 want_port 8080 "nginx Marti HTTP"
 want_port 443  "nginx HTTPS / web UI"
