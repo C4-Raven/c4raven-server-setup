@@ -352,6 +352,14 @@ sudo sed -i \
 # public host in its ICE candidates, not just the interface IPs.
 sudo sed -i "s~^webrtcAdditionalHosts: \[\]~webrtcAdditionalHosts: [${DOMAIN:-$(hostname -I | awk '{print $1}')}]~" \
   "$DATA_DIR/mediamtx/mediamtx.yml"
+# Fill in MediaMTX's webhook token now, from the config.yml generate-config
+# wrote. Otherwise the first Raven process to start rewrites mediamtx.yml
+# while mediamtx is already running; mediamtx hot-reloads, collides with its
+# own RTSP listener ("bind: address already in use") and exits.
+MTX_TOKEN_VALUE=$(sudo sed -n "s/^RAVEN_MEDIAMTX_TOKEN: *//p" "$DATA_DIR/config.yml" | tr -d "'\"")
+if [ -n "$MTX_TOKEN_VALUE" ]; then
+  sudo sed -i "s~MTX_TOKEN~$MTX_TOKEN_VALUE~g" "$DATA_DIR/mediamtx/mediamtx.yml"
+fi
 
 # Restart=always, not on-failure: mediamtx exits 0 when a hot reload of
 # mediamtx.yml fails, which on-failure treats as a clean stop.

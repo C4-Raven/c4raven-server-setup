@@ -513,6 +513,14 @@ HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [ -n "$HOST_IP" ] || HOST_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
 sed -i "s~^webrtcAdditionalHosts: \[\]~webrtcAdditionalHosts: [${DOMAIN:-$HOST_IP}]~" \
   "$DATA_DIR/mediamtx/mediamtx.yml"
+# Fill in MediaMTX's webhook token now, from the config.yml generate-config
+# wrote. Otherwise the first Raven process to start rewrites mediamtx.yml
+# while mediamtx is already running; mediamtx hot-reloads, collides with its
+# own RTSP listener ("bind: address already in use") and exits.
+MTX_TOKEN_VALUE=$(sed -n "s/^RAVEN_MEDIAMTX_TOKEN: *//p" "$DATA_DIR/config.yml" | tr -d "'\"")
+if [ -n "$MTX_TOKEN_VALUE" ]; then
+  sed -i "s~MTX_TOKEN~$MTX_TOKEN_VALUE~g" "$DATA_DIR/mediamtx/mediamtx.yml"
+fi
 
 # ---------------------------------------------------------------------------
 # nginx
