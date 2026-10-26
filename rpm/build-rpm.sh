@@ -232,6 +232,13 @@ if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE' "$STAG
   echo "error: unsubstituted placeholder left in staged data files" >&2
   exit 1
 fi
+# The one placeholder that is NOT build-time: raven_certificate_enrollment_domain's
+# DOMAIN_NAME is the admin's domain, filled in by the installer only after
+# certbot has a certificate for it. It has to arrive intact.
+if ! grep -q 'DOMAIN_NAME' "$STAGE/usr/share/c4raven-server/nginx_configs/raven_certificate_enrollment_domain"; then
+  echo "error: staged raven_certificate_enrollment_domain lost its DOMAIN_NAME placeholder" >&2
+  exit 1
+fi
 
 # Ship the shared distro shim when the repo has one, so the setup script uses
 # the same detection as install.sh instead of its built-in EL9 fallbacks.

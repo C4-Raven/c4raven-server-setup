@@ -240,6 +240,8 @@ does not remove them. To fully wipe it:
     sudo userdel -r raven
     sudo rm -f /etc/nginx/conf.d/raven_http.conf /etc/nginx/conf.d/raven_https.conf
     sudo rm -f /etc/nginx/conf.d/raven_certificate_enrollment.conf
+    sudo rm -f /etc/nginx/conf.d/raven_certificate_enrollment_domain.conf
+    sudo rm -f /etc/letsencrypt/renewal-hooks/deploy/raven-nginx-reload
     sudo rm -f /etc/nginx/stream.d/rabbitmq.conf /etc/nginx/stream.d/mediamtx.conf
     sudo systemctl reload nginx
 

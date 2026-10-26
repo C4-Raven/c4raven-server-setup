@@ -142,6 +142,8 @@ jobs:
         with:
           name: logs-${{ matrix.distro }}-${{ matrix.arch }}-${{ matrix.method }}
           path: tests/.artifacts/
+          # .artifacts is a dot-dir; upload-artifact@v4 skips hidden paths by default.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 
@@ -188,4 +190,6 @@ jobs:
         with:
           name: logs-offline-amd64
           path: tests/.artifacts/
+          # .artifacts is a dot-dir; upload-artifact@v4 skips hidden paths by default.
+          include-hidden-files: true
           if-no-files-found: ignore

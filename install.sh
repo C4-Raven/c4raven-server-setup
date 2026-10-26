@@ -57,7 +57,8 @@ curl -fsSL "$REPO_RAW/lib/distro.sh" -o "$INSTALLER_DIR/distro.sh"
 for _fn in detect_distro distro_supported pkg_refresh pkg_install \
            pkg_install_optional stack_packages stack_packages_optional \
            setup_extra_repos pg_init node_install firewall_open \
-           selinux_fixup nginx_site_file nginx_disable_default_site; do
+           selinux_fixup nginx_site_file nginx_disable_default_site \
+           nginx_enable_site nginx_remove_site; do
   command -v "$_fn" >/dev/null 2>&1 || {
     echo "${RED}lib/distro.sh did not load correctly ($_fn is missing) -- aborting before anything on this system is changed.${NC}"
     exit 1
@@ -435,9 +436,44 @@ sudo systemctl enable nginx
 sudo systemctl restart nginx
 
 if [ -n "$DOMAIN" ]; then
+  # Take the 8446 domain block (written below on a previous run) out of
+  # nginx's sight first: it has `server_name $DOMAIN`, and certbot installs
+  # into the FIRST ssl block whose server_name matches -- which would be that
+  # one, so the web UI on 443 would never get its own LE block.
+  nginx_remove_site raven_certificate_enrollment_domain
   echo "${GREEN}Requesting a Let's Encrypt certificate for ${DOMAIN}...${NC}"
   sudo certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect || \
     echo "${YELLOW}certbot failed -- check that ${DOMAIN} already resolves to this server's public IP, then run: sudo certbot --nginx -d ${DOMAIN}${NC}"
+
+  # Port 8446 for domain users (ATAK Quick Connect): a `server_name $DOMAIN`
+  # block with the LE certificate, next to raven_certificate_enrollment's
+  # default block that keeps Raven's own cert for VPN/bare-IP users. Only once
+  # a certificate actually exists -- a block pointing at a missing file would
+  # stop nginx from loading at all. A certificate from an earlier run counts:
+  # a transient certbot failure here should not take Quick Connect away.
+  # KEEP IN STEP with debian/c4raven-server.postinst and rpm/configure.sh.
+  if sudo test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
+    sudo curl -fsSL "$REPO_RAW/nginx_configs/raven_certificate_enrollment_domain" \
+      -o "$(nginx_site_file raven_certificate_enrollment_domain)"
+    sudo sed -i "s~DOMAIN_NAME~$DOMAIN~g" "$(nginx_site_file raven_certificate_enrollment_domain)"
+    nginx_enable_site raven_certificate_enrollment_domain
+    # Renewal repoints the live/ symlinks; nginx only reads them on (re)load.
+    # certbot's nginx installer already reloads after a renewal, but this
+    # block is not one certbot manages, so don't depend on that.
+    sudo install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+    printf '#!/bin/sh\n# c4raven-server: reload nginx so port 8446 serves the renewed certificate.\nsystemctl reload nginx\n' | \
+      sudo tee /etc/letsencrypt/renewal-hooks/deploy/raven-nginx-reload >/dev/null
+    sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/raven-nginx-reload
+    if sudo nginx -t >/dev/null 2>&1; then
+      sudo systemctl reload nginx
+    else
+      echo "${YELLOW}nginx rejected the port-8446 domain block; removed it again. Domain users on 8446 will get Raven's own certificate.${NC}"
+      nginx_remove_site raven_certificate_enrollment_domain
+      sudo systemctl reload nginx || true
+    fi
+  else
+    echo "${YELLOW}No Let's Encrypt certificate for ${DOMAIN} yet, so port 8446 serves only Raven's own certificate (VPN/IP onboarding works; domain Quick Connect does not). Re-run this installer once certbot succeeds.${NC}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

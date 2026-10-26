@@ -19,7 +19,19 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       systemd systemd-sysv dbus dbus-user-session \
       sudo ca-certificates curl iproute2 procps util-linux bsdextrautils \
+      tzdata \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# tzdata (above): every Ubuntu Server/cloud image has it. Left out, the
+# installer's apt run pulls it in and its debconf "Geographic area" prompt
+# blocks on the pty forever (install.sh's apt calls do not set
+# DEBIAN_FRONTEND, and sudo strips the ENV above).
+#
+# The docker ubuntu image ships /usr/sbin/policy-rc.d (exit 101), which makes
+# every package postinst skip starting its service. A real server has no such
+# file: postgresql-common starts the cluster before c4raven-server's postinst
+# runs psql against it. Remove it so the container behaves like the server.
+RUN rm -f /usr/sbin/policy-rc.d
 
 # Units that need hardware, a real kernel log, or a console the container
 # does not have. Left unmasked they fail at boot and poison `systemctl

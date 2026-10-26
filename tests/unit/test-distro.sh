@@ -129,7 +129,7 @@ t_true "lib/distro.sh sources cleanly under set -euo pipefail" -- \
 missing=$(probe ubuntu-24.04 x86_64 '
   for f in detect_distro distro_supported pkg_refresh pkg_install \
            pkg_install_optional pkg_installed nginx_site_file nginx_stream_file \
-           nginx_stream_include nginx_enable_site nginx_enable_stream \
+           nginx_stream_include nginx_enable_site nginx_enable_stream nginx_remove_site \
            firewall_open selinux_enforcing selinux_fixup selinux_fix_webroot \
            selinux_fix_certs stack_packages stack_packages_optional \
            setup_extra_repos pg_init node_ok node_install; do
@@ -267,6 +267,37 @@ t_has "$(sandbox_log)" "ln -sf /etc/nginx/streams-available/mediamtx /etc/nginx/
 sandbox_log_reset
 probe rocky-9 x86_64 'nginx_enable_stream mediamtx' >/dev/null
 t_eq "$(sandbox_log)" "" "rhel: nginx_enable_stream is a no-op"
+
+# nginx_remove_site is how install.sh takes the 8446 domain block out of
+# certbot's sight before every certbot run. On Debian it must take the
+# sites-enabled symlink too, or nginx is left including a dangling path.
+# rm gets its own opt-in recorder set: the transparent sudo stub would
+# otherwise exec the real rm against this machine's /etc/nginx.
+sandbox_recorder rm rmrec
+PROBE_PATH=mutate:rmrec
+sandbox_log_reset
+probe ubuntu-24.04 x86_64 'nginx_remove_site raven_certificate_enrollment_domain' >/dev/null
+t_has "$(sandbox_log)" "rm -f /etc/nginx/sites-enabled/raven_certificate_enrollment_domain" \
+      "debian: nginx_remove_site removes the sites-enabled symlink"
+t_has "$(sandbox_log)" "rm -f /etc/nginx/sites-available/raven_certificate_enrollment_domain" \
+      "debian: nginx_remove_site removes the site file"
+sandbox_log_reset
+probe rocky-9 x86_64 'nginx_remove_site raven_certificate_enrollment_domain' >/dev/null
+t_has "$(sandbox_log)" "rm -f /etc/nginx/conf.d/raven_certificate_enrollment_domain.conf" \
+      "rhel: nginx_remove_site removes the conf.d file, .conf suffix and all"
+t_hasnt "$(sandbox_log)" "sites-enabled" "rhel: nginx_remove_site never touches a sites-enabled dir"
+PROBE_PATH=mutate
+
+# Port 8446's default server is "the first block nginx loads for the port",
+# not an explicit default_server (see nginx_configs/raven_certificate_
+# enrollment for why). nginx loads an include glob in C-locale byte order, so
+# the base file must sort ahead of the domain file in BOTH layouts.
+for d in ubuntu-24.04 rocky-9; do
+  base=$(probe "$d" x86_64 'nginx_site_file raven_certificate_enrollment')
+  dom=$(probe "$d" x86_64 'nginx_site_file raven_certificate_enrollment_domain')
+  first=$(printf '%s\n%s\n' "$dom" "$base" | LC_ALL=C sort | head -1)
+  t_eq "$first" "$base" "$d: raven_certificate_enrollment sorts before the _domain file (stays 8446's default)"
+done
 unset PROBE_PATH
 
 # ===========================================================================

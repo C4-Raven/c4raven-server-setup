@@ -14,10 +14,17 @@ ENV container=docker \
     LANG=C.UTF-8
 
 # ubi-init ships microdnf on some builds and full dnf on others; normalise.
+#
+# No `curl` in this list: the base image ships curl-minimal, which
+# Provides: curl but Conflicts: curl, and `dnf install curl` asks for the
+# package *named* curl, so it fails without --allowerasing. curl-minimal
+# already gives /usr/bin/curl with http/https, which is all the harness and
+# install.sh need -- and it is what many real EL9 boxes have, so keep it.
 RUN (command -v dnf >/dev/null 2>&1 || microdnf -y install dnf) \
  && dnf -y install --setopt=install_weak_deps=False \
       sudo shadow-utils util-linux procps-ng iproute hostname \
-      curl ca-certificates \
+      ca-certificates \
+ && command -v curl >/dev/null \
  && dnf clean all
 
 RUN systemctl mask \

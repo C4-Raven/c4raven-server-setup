@@ -1,10 +1,34 @@
-# Enables HTTPS requests on port 8446 only for automatic certificate enrollment
+# Enables HTTPS requests on port 8446 only for automatic certificate enrollment.
+#
+# This block is the DEFAULT server for 8446 and always presents Raven's own
+# internal-CA server certificate. It is what every client that does not ask for
+# the public domain by name lands on: VPN and bare-IP users (an IP-literal TLS
+# client sends no SNI at all), and anyone typing a name we have no block for.
+# Those users onboard from the "Connect over VPN" data package, which ships
+# Raven's CA and enrolls with preconfigured trust -- ATAK then trusts ONLY that
+# CA for this server and skips the hostname check, so a Let's Encrypt cert here
+# would make every one of them fail the handshake.
+#
+# Users who type the public domain ("Quick Connect") need a publicly trusted
+# cert that matches it instead. That is a second, separate block,
+# raven_certificate_enrollment_domain (server_name <domain>, LE cert), which
+# the installers write only once certbot has a certificate for the domain.
+#
+# Deliberately NO `default_server` on the listen line: nginx already uses the
+# first server{} that listens on a port as its default, and this file always
+# sorts ahead of raven_certificate_enrollment_domain (nginx globs its includes
+# in C-locale order on both the Debian and the EL layout). An explicit
+# default_server here would be a second one next to raven_http's on 8080,
+# and `certbot --nginx` -- which, finding no block for a new domain, clones
+# "the" default_server vhost -- then refuses to install the certificate at
+# all ("Could not automatically find a matching server block"). The unit
+# tests pin both halves of that.
 server {
 
     root /var/www/html/raven;
     index index.html index.htm index.nginx-debian.html;
 
-    server_name raven_8446;
+    server_name _;
 
     location /Marti/api/tls {
         proxy_pass http://127.0.0.1:8081;

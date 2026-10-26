@@ -207,14 +207,14 @@ pkg_refresh() {
     rhel) _sudo dnf -y upgrade --refresh ;;
     # NEEDRESTART_MODE=a: never stop to ask which services to restart, which
     # would read from the piped script and hang the install.
-    *)    _sudo apt update && _sudo env NEEDRESTART_MODE=a apt upgrade -y ;;
+    *)    _sudo env DEBIAN_FRONTEND=noninteractive apt update && _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt upgrade -y ;;
   esac
 }
 
 pkg_install() {
   case "${DISTRO_FAMILY:-}" in
     rhel) _sudo dnf install -y "$@" ;;
-    *)    _sudo env NEEDRESTART_MODE=a apt install -y "$@" ;;
+    *)    _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt install -y "$@" ;;
   esac
 }
 
@@ -232,7 +232,7 @@ pkg_install() {
 pkg_install_optional() {
   if ! case "${DISTRO_FAMILY:-}" in
          rhel) _sudo dnf install -y "$@" ;;
-         *)    _sudo env NEEDRESTART_MODE=a apt install -y "$@" ;;
+         *)    _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt install -y "$@" ;;
        esac
   then
     echo "distro.sh: optional package(s) not installed: $*" >&2
@@ -274,6 +274,17 @@ nginx_enable_site() {
 nginx_enable_stream() {
   [ -n "$NGINX_STREAMS_ENABLED_DIR" ] || return 0
   _sudo ln -sf "$(nginx_stream_file "$1")" "$NGINX_STREAMS_ENABLED_DIR/"
+}
+
+# The inverse of writing a site file + nginx_enable_site: remove both. On EL
+# removing the conf.d file is the whole job; on Debian the sites-enabled
+# symlink goes too, so nginx is not left with a dangling include. Safe to run
+# when neither exists.
+nginx_remove_site() {
+  if [ -n "$NGINX_SITES_ENABLED_DIR" ]; then
+    _sudo rm -f "$NGINX_SITES_ENABLED_DIR/$1"
+  fi
+  _sudo rm -f "$(nginx_site_file "$1")"
 }
 
 # Get the stock distro welcome page out of the way of raven_http.
@@ -505,7 +516,10 @@ stack_packages() {
       #
       # hostname and tar are not in an EL9 minimal install, and install.sh
       # needs both (`hostname -I`, untarring the mediamtx release).
-      echo "curl git openssl rsync tar hostname
+      # curl only when nothing provides it: EL9 minimal/cloud/UBI images ship
+      # curl-minimal, which Provides curl but Conflicts with the package
+      # named curl, so `dnf install curl` fails there.
+      echo "$(rpm -q --whatprovides curl >/dev/null 2>&1 || echo curl) git openssl rsync tar hostname
             python3.12 python3.12-pip python3.12-devel python3.12-pyyaml
             gcc gcc-c++ make libpq-devel libffi-devel openssl-devel
             postgresql-server postgresql-contrib
@@ -692,7 +706,7 @@ node_install() {
       ;;
     *)
       curl -fsSL https://deb.nodesource.com/setup_22.x | _sudo_E bash -
-      _sudo env NEEDRESTART_MODE=a apt install -y nodejs
+      _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt install -y nodejs
       ;;
   esac
 }

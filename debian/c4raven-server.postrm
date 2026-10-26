@@ -37,6 +37,7 @@ dpkg does not remove them). To fully wipe it:
     sudo userdel -r $APP_USER
     sudo rm -f /etc/nginx/sites-available/raven_* /etc/nginx/sites-enabled/raven_*
     sudo rm -f /etc/nginx/streams-available/{rabbitmq,mediamtx} /etc/nginx/streams-enabled/{rabbitmq,mediamtx}
+    sudo rm -f /etc/letsencrypt/renewal-hooks/deploy/raven-nginx-reload
     sudo systemctl reload nginx
 
 EOF

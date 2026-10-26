@@ -248,6 +248,37 @@ by hand either way. The `.deb` doesn't prompt for it; see
 [federation-hub-setup](https://github.com/C4-Raven/federation-hub-setup)
 to add it afterwards.
 
+## Connecting ATAK, iTAK and WinTAK
+
+Clients enroll for their certificate on port **8446**. That port serves two
+certificates, depending on how the client reaches the server:
+
+- **Users who can reach the public domain** (only when you gave the
+  installer a domain and certbot succeeded): in ATAK use **Quick Connect**
+  and type the domain, e.g. `tak.example.org`, plus their username and
+  password. 8446 shows them the Let's Encrypt certificate for that domain,
+  which ATAK already trusts. Quick Connect only works with the domain name.
+  It does not work with an IP address.
+- **VPN and bare-IP users** (no domain, or the server is reached by its
+  IP address over a VPN): log in to the web UI and scan the **Connect over
+  VPN** QR code with ATAK. It downloads a small connection package over
+  plain HTTP on port 8080. The package contains the server's own CA
+  certificate and enrolls with that CA as the only one ATAK trusts for this
+  server, so the IP address needs no publicly trusted certificate. On
+  iTAK, download the connection package from the same page and import it
+  with **Upload Server Package**. On WinTAK, import it as a data package.
+
+Behind the scenes, 8446's default server (`raven_certificate_enrollment`)
+always presents Raven's internal-CA certificate, and that is what any
+client that doesn't ask for the domain by name gets. An IP-address TLS
+connection sends no SNI. When a Let's Encrypt certificate exists, the
+installers add a second block, `raven_certificate_enrollment_domain`
+(`server_name <your domain>`), that presents it. They re-create it on
+every run, after certbot. Renewals are picked up by an nginx reload from
+certbot's nginx installer and from
+`/etc/letsencrypt/renewal-hooks/deploy/raven-nginx-reload`. Keep ports 8080
+and 8446 open. All three install paths open both.
+
 ## Update
 
 For a server installed with `install.sh` (or the `.deb`, if you'd rather

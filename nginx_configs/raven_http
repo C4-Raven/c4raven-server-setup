@@ -18,6 +18,11 @@ server {
 
         server_name raven_8080;
 
+        # This also carries /api/onboard/..., which is where ATAK fetches the
+        # "Connect over VPN" data package from (plain HTTP on 8080, before the
+        # device trusts anything). Port 80 does NOT work for that: the `if`
+        # above redirects all of port 80 to HTTPS. Keep 8080 open in the
+        # firewall lists (install.sh, debian postinst, rpm/configure.sh).
         location ~ ^/(api|Marti) {
                  proxy_pass http://127.0.0.1:8081;
                  proxy_http_version 1.1;
