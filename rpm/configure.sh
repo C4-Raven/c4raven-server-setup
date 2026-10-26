@@ -219,6 +219,16 @@ if ! command -v "$RAVEN_PYTHON" >/dev/null 2>&1; then
   exit 1
 fi
 
+# We run from %posttrans, and rpm runs the transaction's FILE TRIGGERS after
+# %posttrans -- so systemd's tmpfiles.d trigger and glibc's ldconfig trigger
+# for packages installed alongside us have not fired yet. EL9's
+# postgresql-server ships /run/postgresql only as a %ghost and creates it from
+# tmpfiles.d, so without this postmaster cannot create its socket lock file
+# and `systemctl start postgresql` fails on a fresh install. Both are
+# idempotent and are exactly what the triggers will run anyway.
+systemd-tmpfiles --create >/dev/null 2>&1 || true
+ldconfig || true
+
 echo "Setting up the dedicated '$APP_USER' account..."
 if ! id "$APP_USER" &>/dev/null; then
   useradd --system --create-home --home-dir "$APP_HOME" --shell /bin/bash "$APP_USER"

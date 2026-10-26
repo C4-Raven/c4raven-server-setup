@@ -253,6 +253,11 @@ collect() {
     > "$out/raven.log" 2>&1 || true
   "$ENGINE" exec "$name" sh -c 'cat /var/log/nginx/error.log 2>/dev/null' \
     > "$out/nginx-error.log" 2>&1 || true
+  # EL's postmaster hands its output to the logging collector before it
+  # reports a startup FATAL, so the journal only ever says "exit 1".
+  "$ENGINE" exec "$name" sh -c 'tail -n 200 /var/lib/pgsql/initdb_postgresql.log \
+      /var/lib/pgsql/data/log/*.log /var/log/postgresql/*.log 2>/dev/null' \
+    > "$out/postgresql.log" 2>&1 || true
 }
 
 teardown() {

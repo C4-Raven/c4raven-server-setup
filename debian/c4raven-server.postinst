@@ -50,6 +50,13 @@ node_ok() {
 
 case "$1" in
   configure)
+    # libc-bin's ldconfig trigger is deferred to the END of the apt run, so
+    # a libpq5 unpacked in this same transaction is not in ld.so.cache yet.
+    # psycopg (pure-python build) finds libpq via ctypes.util.find_library,
+    # which reads that cache -- without this, the first `flask raven` call
+    # on a fresh box dies with "libpq library not found".
+    ldconfig
+
     echo "Setting up the dedicated '$APP_USER' account..."
     if ! id "$APP_USER" &>/dev/null; then
       useradd --system --create-home --home-dir "$APP_HOME" --shell /bin/bash "$APP_USER"

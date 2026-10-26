@@ -37,9 +37,21 @@ RUN systemctl mask \
       systemd-firstboot.service \
  || true
 
+# !pam_acct_mgmt: on an Ubuntu 24.04 host (GitHub's runners included) the
+# host's AppArmor profile for unix_chkpwd attaches by path to this image's
+# /usr/sbin/unix_chkpwd too, because --privileged leaves the container
+# unconfined. It denies dac_override/dac_read_search, EL's /etc/shadow is mode
+# 0000, so pam_unix's account check for tester fails and every `sudo` dies
+# with "PAM account management error: Authentication service cannot retrieve
+# authentication info" (journal: apparmor="DENIED" profile="unix-chkpwd").
+# Ubuntu's 0640 root:shadow layout never needs those caps, so only this image
+# is affected. Skipping account management for the harness's own throwaway
+# user changes nothing the installer does.
 RUN useradd --create-home --shell /bin/bash tester \
- && printf 'tester ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-tester \
- && chmod 0440 /etc/sudoers.d/90-tester
+ && printf 'Defaults:tester !pam_acct_mgmt\ntester ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-tester \
+ && chmod 0440 /etc/sudoers.d/90-tester \
+ && visudo -cf /etc/sudoers.d/90-tester \
+ && runuser -u tester -- sudo -n true
 
 STOPSIGNAL SIGRTMIN+3
 

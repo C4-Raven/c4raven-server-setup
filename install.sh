@@ -118,8 +118,13 @@ ask_yn() {
 # skeleton profile puts ~/.local/bin (poetry, yarn via corepack) on PATH --
 # ~/.profile on Debian/Ubuntu, ~/.bash_profile on EL; both /etc/skel copies
 # prepend it.
+#
+# `cd ~` first: sudo keeps our cwd, which is $INSTALLER_DIR -- a 0700
+# directory the app user cannot read. Commands that don't cd themselves
+# (`poetry config`) look for a pyproject.toml there and die with
+# "Permission denied: '/tmp/raven_installer.XXXXXXXX'".
 run_as_app() {
-  sudo -u "$APP_USER" -H bash -lc "$1"
+  sudo -u "$APP_USER" -H bash -lc "cd ~ && $1"
 }
 
 echo "${GREEN}Installing system packages via ${PKG_MGR}. You may be prompted for your sudo password...${NC}"
