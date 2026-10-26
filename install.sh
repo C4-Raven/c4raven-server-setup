@@ -572,6 +572,22 @@ echo "${GREEN}Configuring RabbitMQ...${NC}"
 # in to. --offline works whether or not the broker is running.
 sudo rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
 sudo curl -fsSL "$REPO_RAW/rabbitmq.conf" -o /etc/rabbitmq/rabbitmq.conf
+# RabbitMQ 4.x (EL always gets it from rabbitmq.com; newer Debian/Ubuntu ship
+# it too) refuses transient non-exclusive queues by default -- the ones
+# cot_parser, eud_handler and the Marti APIs declare -- with
+# "541 INTERNAL_ERROR - Feature `transient_nonexcl_queues` is deprecated", so
+# cot_parser crash-loops and no CoT is ever routed. Re-permit it. Only on 4+:
+# 3.12 (Ubuntu 24.04) predates the setting, and RabbitMQ refuses to start on
+# a rabbitmq.conf key it has no schema for.
+case "${DISTRO_FAMILY:-}" in
+  rhel) RABBIT_PKG_VERSION=$(rpm -q --qf '%{VERSION}' rabbitmq-server 2>/dev/null || true) ;;
+  *)    RABBIT_PKG_VERSION=$(dpkg-query -W -f='${Version}' rabbitmq-server 2>/dev/null || true) ;;
+esac
+RABBIT_MAJOR=$(printf '%s' "${RABBIT_PKG_VERSION#*:}" | cut -d. -f1)
+case "$RABBIT_MAJOR" in ''|*[!0-9]*) RABBIT_MAJOR=0 ;; esac
+if [ "$RABBIT_MAJOR" -ge 4 ]; then
+  echo "deprecated_features.permit.transient_nonexcl_queues = true" | sudo tee -a /etc/rabbitmq/rabbitmq.conf > /dev/null
+fi
 
 RABBITMQ_VERSION=$(sudo rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
 if [ -n "$RABBITMQ_VERSION" ] && ! sudo grep -qs PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf; then

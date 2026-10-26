@@ -351,4 +351,17 @@ else
   done
 fi
 
+# RabbitMQ 4.x (every EL install) denies transient non-exclusive queues by
+# default and cot_parser crash-loops on the 541 it gets back. Every install
+# path must re-permit them -- and only on 4+, since 3.12's schema has no such
+# key and the broker would refuse to start on it.
+for f in install.sh rpm/configure.sh debian/c4raven-server.postinst; do
+  t_true "$f re-permits transient_nonexcl_queues for RabbitMQ 4+" -- \
+    grep -q 'deprecated_features.permit.transient_nonexcl_queues = true' "$REPO_DIR/$f"
+  t_true "$f gates the permit on RabbitMQ major >= 4" -- \
+    grep -q '"$RABBIT_MAJOR" -ge 4' "$REPO_DIR/$f"
+done
+t_hasnt "$(cat "$REPO_DIR/rabbitmq.conf")" "deprecated_features" \
+  "the shared rabbitmq.conf stays loadable by RabbitMQ 3.12 (no deprecated_features key)"
+
 t_summary

@@ -845,6 +845,18 @@ mkdir -p /etc/rabbitmq
 # plugins aren't enabled yet.
 rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
 install -m 644 "$PKGDATA/rabbitmq.conf" /etc/rabbitmq/rabbitmq.conf
+# RabbitMQ 4.x (EL always gets it from rabbitmq.com; newer Debian/Ubuntu ship
+# it too) refuses transient non-exclusive queues by default -- the ones
+# cot_parser, eud_handler and the Marti APIs declare -- with
+# "541 INTERNAL_ERROR - Feature `transient_nonexcl_queues` is deprecated", so
+# cot_parser crash-loops and no CoT is ever routed. Re-permit it. Only on 4+:
+# 3.12 (Ubuntu 24.04) predates the setting, and RabbitMQ refuses to start on
+# a rabbitmq.conf key it has no schema for.
+RABBIT_MAJOR=$(rpm -q --qf '%{VERSION}' rabbitmq-server 2>/dev/null | cut -d. -f1 || true)
+case "$RABBIT_MAJOR" in ''|*[!0-9]*) RABBIT_MAJOR=0 ;; esac
+if [ "$RABBIT_MAJOR" -ge 4 ]; then
+  echo "deprecated_features.permit.transient_nonexcl_queues = true" >> /etc/rabbitmq/rabbitmq.conf
+fi
 
 # No PLUGINS_DIR in rabbitmq-env.conf, unlike the .deb: the RPM's
 # rabbitmq-defaults already derives it from the installed version, and a
