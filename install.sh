@@ -599,9 +599,19 @@ if [ "$FEDHUB_AVAILABLE" = true ] && ask_yn "Do you already have a takserver-fed
   read -rp "${GREEN}Full path to the .deb file: ${NC}" FEDHUB_DEB < /dev/tty
   if [ -f "$FEDHUB_DEB" ]; then
     echo "${GREEN}Installing MongoDB (Federation Hub's policy/mission store)...${NC}"
-    curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg
-    echo "deb [signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/7.0 multiverse" | \
-      sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list > /dev/null
+    # MongoDB publishes 7.0 for jammy and bookworm but nothing older than 8.0
+    # for noble (24.04), and Debian lives under apt/debian with `main`.
+    MONGO_CODENAME=$(lsb_release -cs)
+    MONGO_VER=7.0
+    [ "$MONGO_CODENAME" = noble ] && MONGO_VER=8.0
+    if [ "$DISTRO_ID" = debian ]; then
+      MONGO_REPO="https://repo.mongodb.org/apt/debian $MONGO_CODENAME/mongodb-org/$MONGO_VER main"
+    else
+      MONGO_REPO="https://repo.mongodb.org/apt/ubuntu $MONGO_CODENAME/mongodb-org/$MONGO_VER multiverse"
+    fi
+    curl -fsSL "https://www.mongodb.org/static/pgp/server-$MONGO_VER.asc" | sudo gpg --dearmor --yes -o "/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg"
+    echo "deb [signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg] $MONGO_REPO" | \
+      sudo tee "/etc/apt/sources.list.d/mongodb-org-$MONGO_VER.list" > /dev/null
     sudo apt update
     sudo apt install -y mongodb-org
     sudo systemctl enable --now mongod

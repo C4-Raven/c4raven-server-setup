@@ -748,7 +748,7 @@ else
   # c4raven-ui pins yarn 4 (packageManager in package.json) -- npm doesn't
   # understand its lockfile and will silently downgrade/corrupt it.
   # `corepack yarn` runs the pinned version directly.
-  run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn install"
+  run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn install --immutable"
   run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
   # Deploy as root: whatever previously owned files are in the webroot might not
   # be deletable by $APP_USER even though the directory is world-writable
