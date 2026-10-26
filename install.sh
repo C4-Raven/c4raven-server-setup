@@ -102,8 +102,19 @@ if [ "$(whoami)" == "$APP_USER" ]; then
 fi
 
 ask_yn() {
-  # ask_yn "question" -> returns 0 for yes, 1 for no
-  local reply
+  # ask_yn "question" [ENV_VAR] -> returns 0 for yes, 1 for no.
+  # If ENV_VAR is set (to anything, even empty), it is the answer and the tty
+  # is never touched: y/yes/true/1 mean yes, anything else no. That is what
+  # makes an unattended run possible -- with no tty, `read < /dev/tty` fails
+  # and `set -e` ends the install. The variable names match the .deb/.rpm
+  # ones (RAVEN_TURNSTILE_ENABLE, ...).
+  local reply var="${2:-}"
+  if [ -n "$var" ] && [ -n "${!var+x}" ]; then
+    case "${!var}" in
+      [yY]|[yY][eE][sS]|[tT][rR][uU][eE]|1) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
   while true; do
     read -rp "${GREEN}$1${NC} [y/n] " reply < /dev/tty
     case "$reply" in
@@ -125,6 +136,13 @@ ask_yn() {
 # "Permission denied: '/tmp/raven_installer.XXXXXXXX'".
 run_as_app() {
   sudo -u "$APP_USER" -H bash -lc "cd ~ && $1"
+}
+
+# Same cwd problem for the postgres account: without `cd ~`, every psql call
+# first prints `could not change directory to "/tmp/raven_installer.XXXXXXXX":
+# Permission denied`.
+run_as_pg() {
+  sudo su postgres -c "cd ~ && $1"
 }
 
 echo "${GREEN}Installing system packages via ${PKG_MGR}. You may be prompted for your sudo password...${NC}"
@@ -217,15 +235,15 @@ echo "${GREEN}Setting up PostgreSQL...${NC}"
 # `postgresql-setup --initdb` has run, and then defaults host connections to
 # `ident`, which rejects the password auth the app's 127.0.0.1 URI needs.
 # pg_init does whichever of those apply, idempotently, and leaves the
-# `sudo su postgres` calls below working unchanged on both.
+# run_as_pg (`sudo su postgres`) calls below working unchanged on both.
 pg_init
-DB_USER_EXISTS=$(sudo su postgres -c "psql -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_NAME'\"")
+DB_USER_EXISTS=$(run_as_pg "psql -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_NAME'\"")
 if [ "$DB_USER_EXISTS" != 1 ]; then
   # Hex only: this goes raw into a URI, where `%` would be percent-decoded
   # by SQLAlchemy/libpq. (Not `tr ... | head -c`: under pipefail, head
   # closing the pipe kills tr with SIGPIPE and the whole script with it.)
   POSTGRESQL_PASSWORD=$(openssl rand -hex 16)
-  sudo su postgres -c "psql -c \"create role $DB_NAME with login password '${POSTGRESQL_PASSWORD}';\""
+  run_as_pg "psql -c \"create role $DB_NAME with login password '${POSTGRESQL_PASSWORD}';\""
 else
   read -rp "${GREEN}PostgreSQL user '$DB_NAME' already exists -- enter its password: ${NC}" POSTGRESQL_PASSWORD < /dev/tty
 fi
@@ -241,18 +259,18 @@ with open(path, 'w') as f:
     yaml.safe_dump(conf, f)
 PYEOF"
 
-DB_EXISTS=$(sudo su postgres -c "psql -XtAc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\"")
+DB_EXISTS=$(run_as_pg "psql -XtAc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\"")
 if [ "$DB_EXISTS" != 1 ]; then
-  sudo su postgres -c "psql -c 'create database $DB_NAME;'"
+  run_as_pg "psql -c 'create database $DB_NAME;'"
 fi
-sudo su postgres -c "psql -c 'GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAME\" TO $DB_NAME;'"
-sudo su postgres -c "psql -d $DB_NAME -c 'GRANT ALL ON SCHEMA public TO $DB_NAME;'"
+run_as_pg "psql -c 'GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAME\" TO $DB_NAME;'"
+run_as_pg "psql -d $DB_NAME -c 'GRANT ALL ON SCHEMA public TO $DB_NAME;'"
 # PostGIS is best-effort, not fatal: EL9 has no PostGIS package in AppStream
 # or EPEL at all (it only exists in PGDG), so this statement WILL fail there
 # on a stock box -- and under `set -e` that would end the install right here,
 # before any of the services below are created. Nothing in the current schema
 # needs it.
-sudo su postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS postgis'" || \
+run_as_pg "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS postgis'" || \
   echo "${YELLOW}Could not create the postgis extension -- continuing without it. Geospatial columns will be unavailable; install PostGIS for this PostgreSQL (on EL that means the PGDG repo) and re-run this script to add it.${NC}"
 echo "${GREEN}Database ready.${NC}"
 # Migrations run automatically inside the app itself on every startup
@@ -262,10 +280,16 @@ echo "${GREEN}Database ready.${NC}"
 # ---------------------------------------------------------------------------
 # Cloudflare Turnstile (bot protection on login)
 # ---------------------------------------------------------------------------
-if ask_yn "Enable Cloudflare Turnstile (the human-verification checkbox) on the login page?"; then
-  echo "Get a site key + secret key from the Cloudflare dashboard -> Turnstile first, if you haven't already."
-  read -rp "${GREEN}Turnstile site key: ${NC}" TURNSTILE_SITE_KEY < /dev/tty
-  read -rp "${GREEN}Turnstile secret key: ${NC}" TURNSTILE_SECRET_KEY < /dev/tty
+# Unattended: RAVEN_TURNSTILE_ENABLE=true plus RAVEN_TURNSTILE_SITE_KEY and
+# RAVEN_TURNSTILE_SECRET_KEY (a key left unset is still asked for).
+if ask_yn "Enable Cloudflare Turnstile (the human-verification checkbox) on the login page?" RAVEN_TURNSTILE_ENABLE; then
+  TURNSTILE_SITE_KEY="${RAVEN_TURNSTILE_SITE_KEY:-}"
+  TURNSTILE_SECRET_KEY="${RAVEN_TURNSTILE_SECRET_KEY:-}"
+  if [ -z "$TURNSTILE_SITE_KEY" ] || [ -z "$TURNSTILE_SECRET_KEY" ]; then
+    echo "Get a site key + secret key from the Cloudflare dashboard -> Turnstile first, if you haven't already."
+  fi
+  [ -n "$TURNSTILE_SITE_KEY" ] || read -rp "${GREEN}Turnstile site key: ${NC}" TURNSTILE_SITE_KEY < /dev/tty
+  [ -n "$TURNSTILE_SECRET_KEY" ] || read -rp "${GREEN}Turnstile secret key: ${NC}" TURNSTILE_SECRET_KEY < /dev/tty
   run_as_app "$PYTHON_BIN - '$TURNSTILE_SITE_KEY' '$TURNSTILE_SECRET_KEY' << 'PYEOF'
 import sys, yaml
 site_key, secret_key = sys.argv[1], sys.argv[2]
@@ -286,8 +310,10 @@ fi
 # of a self-signed one, and is required if you want Federation Hub to be
 # reachable by a hostname rather than a raw IP)
 # ---------------------------------------------------------------------------
-DOMAIN=""
-if ask_yn "Do you want to configure a public domain name for this server?"; then
+# Unattended: RAVEN_DOMAIN=tak.example.org, or RAVEN_DOMAIN= (set but empty)
+# for no domain. Either way the question is not asked.
+DOMAIN="${RAVEN_DOMAIN:-}"
+if [ -z "${RAVEN_DOMAIN+x}" ] && ask_yn "Do you want to configure a public domain name for this server?"; then
   read -rp "${GREEN}Domain (e.g. tak.example.com, must already point at this server's IP): ${NC}" DOMAIN < /dev/tty
 fi
 
@@ -649,8 +675,11 @@ else
   echo "${YELLOW}Debian/Ubuntu .deb, and its MongoDB dependency likewise. Skipping it --${NC}"
   echo "${YELLOW}nothing else in this install is affected.${NC}"
 fi
-if [ "$FEDHUB_AVAILABLE" = true ] && ask_yn "Do you already have a takserver-fed-hub_*.deb downloaded and ready to install?"; then
-  read -rp "${GREEN}Full path to the .deb file: ${NC}" FEDHUB_DEB < /dev/tty
+# Unattended: RAVEN_FEDHUB_DEB=/path/to/takserver-fed-hub_*.deb, or
+# RAVEN_FEDHUB_DEB= (set but empty) to skip it without being asked.
+FEDHUB_DEB="${RAVEN_FEDHUB_DEB:-}"
+if [ "$FEDHUB_AVAILABLE" = true ] && { [ -n "$FEDHUB_DEB" ] || { [ -z "${RAVEN_FEDHUB_DEB+x}" ] && ask_yn "Do you already have a takserver-fed-hub_*.deb downloaded and ready to install?"; }; }; then
+  [ -n "$FEDHUB_DEB" ] || read -rp "${GREEN}Full path to the .deb file: ${NC}" FEDHUB_DEB < /dev/tty
   if [ -f "$FEDHUB_DEB" ]; then
     echo "${GREEN}Installing MongoDB (Federation Hub's policy/mission store)...${NC}"
     # MongoDB publishes 7.0 for jammy and bookworm but nothing older than 8.0

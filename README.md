@@ -180,6 +180,25 @@ itself where needed and prompts for your password on the terminal even
 when piped into `bash`. Update later with `update.sh`, which always pulls
 the latest `main` rather than a pinned version.
 
+To run it unattended (cloud-init, Ansible, no terminal at all), answer the
+questions in the environment instead. A question whose variable is set is
+never asked; set one to empty to answer "no":
+
+| Variable | Answers |
+| --- | --- |
+| `RAVEN_TURNSTILE_ENABLE` | Turnstile on (`true`/`yes`/`1`) or off (anything else) |
+| `RAVEN_TURNSTILE_SITE_KEY`, `RAVEN_TURNSTILE_SECRET_KEY` | the Turnstile keys (asked for if Turnstile is on and they are unset) |
+| `RAVEN_DOMAIN` | the public domain; empty for none |
+| `RAVEN_FEDHUB_DEB` | path to a `takserver-fed-hub_*.deb`; empty to skip Federation Hub |
+
+```
+curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/install.sh \
+  | RAVEN_TURNSTILE_ENABLE=false RAVEN_DOMAIN=tak.example.org RAVEN_FEDHUB_DEB= bash
+```
+
+The names match the `.rpm`'s (below). The installer still needs
+passwordless `sudo` when there is no terminal to type a password into.
+
 Everything that differs between distributions — package manager and
 package names, the nginx layout, PostgreSQL's initdb, firewalld, SELinux
 — goes through `lib/distro.sh`, so the same script is meant to run on

@@ -53,9 +53,12 @@ case "$1" in
     # libc-bin's ldconfig trigger is deferred to the END of the apt run, so
     # a libpq5 unpacked in this same transaction is not in ld.so.cache yet.
     # psycopg (pure-python build) finds libpq via ctypes.util.find_library,
-    # which reads that cache -- without this, the first `flask raven` call
-    # on a fresh box dies with "libpq library not found".
-    ldconfig
+    # which reads that cache -- without a rebuild here, the first `flask
+    # raven` call on a fresh box dies with "libpq library not found".
+    # A bare `ldconfig` is no use: inside a maintainer script, libc-bin's
+    # /sbin/ldconfig wrapper only queues that same deferred trigger and
+    # exits 0. LDCONFIG_TRIGGER_FORCE makes it rebuild the cache now.
+    LDCONFIG_TRIGGER_FORCE=1 ldconfig
 
     echo "Setting up the dedicated '$APP_USER' account..."
     if ! id "$APP_USER" &>/dev/null; then

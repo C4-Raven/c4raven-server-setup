@@ -113,6 +113,9 @@ Recommends:     ffmpeg-free
 # stream to enable.
 %if %{without offline}
 Recommends:     nodejs >= 20.19
+# The module nodejs splits npm out and has no corepack; setup installs
+# corepack with npm, and stops with instructions if this weak dep was skipped.
+Recommends:     npm
 %endif
 # semanage for the SELinux port labels: a hard Requires, because on an
 # enforcing box without it nginx cannot bind 8446/8322/1936/8883 and setup

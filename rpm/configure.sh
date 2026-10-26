@@ -802,7 +802,19 @@ else
     echo "  sudo c4raven-setup" >&2
     exit 1
   fi
-  command -v corepack >/dev/null 2>&1 || npm install -g corepack
+  # EL9's module nodejs ships no corepack, and npm is a separate package
+  # (the spec Recommends it). Not `dnf install npm` from here: this runs in
+  # %posttrans, inside the transaction that holds the rpmdb lock.
+  if ! command -v corepack >/dev/null 2>&1; then
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "npm is needed to install corepack (which builds the UI) but is not installed." >&2
+      echo "Install it and re-run the setup:" >&2
+      echo "  sudo dnf install npm" >&2
+      echo "  sudo c4raven-setup" >&2
+      exit 1
+    fi
+    npm install -g corepack
+  fi
   # c4raven-ui pins yarn 4 (packageManager in package.json) -- npm doesn't
   # understand its lockfile and will silently downgrade/corrupt it.
   # `corepack yarn` runs the pinned version directly.
