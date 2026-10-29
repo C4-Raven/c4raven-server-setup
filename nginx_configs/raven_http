@@ -76,7 +76,9 @@ server {
         # one. Without this, every session's follow-up PATCH/DELETE falls
         # through to the SPA route instead of reaching MediaMTX, and the
         # browser can never finish ICE negotiation.
-        location ~ ^/[^/]+/whep(/.*)?$ {
+        # Stream paths can contain slashes (TAK ICU publishes to live/VIDEO_1),
+        # so match any prefix, not just one segment.
+        location ~ ^/.+/whep(/.*)?$ {
                 proxy_pass https://127.0.0.1:8889;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
