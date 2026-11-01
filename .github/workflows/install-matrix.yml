@@ -177,7 +177,7 @@ jobs:
       - name: Build the offline bundle
         env:
           GH_TOKEN: ${{ secrets.C4RAVEN_CI_TOKEN }}
-          PKG_VERSION: 99.0.0~ci
+          PKG_VERSION: 99.0.0   # PEP 440 too (it stamps the backend), and above any release
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq apt-utils dpkg-dev ubuntu-keyring
