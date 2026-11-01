@@ -273,12 +273,15 @@ run_as_app "poetry config virtualenvs.in-project true"
 # explicitly -- left to itself it builds .venv against 3.9 and `poetry
 # install` then fails the constraint. Debian's python3 is already in range,
 # and poetry picks it on its own, so leave that path exactly as it was.
-if [ "$DISTRO_FAMILY" = rhel ]; then
-  run_as_app "cd '$APP_HOME/c4raven-server' && poetry env use \$(command -v $PYTHON_BIN)"
-fi
-# Retried: PyPI and files.pythonhosted.org time out often enough on a
-# fresh VM to matter. Re-running resumes; poetry skips what is installed.
-ih_retry run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
+backend_venv_install() {
+  if [ "$DISTRO_FAMILY" = rhel ]; then
+    run_as_app "cd '$APP_HOME/c4raven-server' && poetry env use \$(command -v $PYTHON_BIN)"
+  fi
+  # Retried: PyPI and files.pythonhosted.org time out often enough on a
+  # fresh VM to matter. Re-running resumes; poetry skips what is installed.
+  ih_retry run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
+}
+backend_venv_install
 
 # There's no top-level app.py/wsgi.py for Flask's CLI to auto-discover, and
 # RAVEN_DATA_FOLDER has to be set for every ad-hoc `flask raven ...` call
@@ -288,7 +291,20 @@ FLASK_ENV="FLASK_APP=raven.app RAVEN_DATA_FOLDER='$DATA_DIR'"
 
 # Writes config.yml only if there isn't one: an existing config.yml (a
 # re-run, or a reinstall over a working server) is kept exactly as it is.
-run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven generate-config"
+#
+# This is also the first time the app is loaded, which is what catches a
+# venv an interrupted install left broken: a SIGKILL while poetry is
+# unpacking a wheel leaves that package half on disk with its metadata
+# already written, so the re-run's poetry install counts it as installed and
+# skips it (seen in CI: numpy without its openblas library, imported only
+# inside create_app). Rebuild the venv from scratch once and try again;
+# poetry's wheel cache makes that quick.
+if ! run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven generate-config"; then
+  echo "${YELLOW}The backend's Python environment does not load (an earlier install was probably interrupted); rebuilding it.${NC}"
+  run_as_app "rm -rf '$APP_HOME/c4raven-server/.venv'"
+  backend_venv_install
+  run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven generate-config"
+fi
 
 # New settings (RAVEN_CONNECTION_PROFILE_REQUIRE_AUTH in 2.3.0, ...) come with
 # the fresh config.yml generate-config writes. An existing config.yml is
