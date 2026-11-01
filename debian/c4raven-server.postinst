@@ -332,6 +332,31 @@ stream {
       install -m 644 "$PKGDATA/nginx_configs/$f" "/etc/nginx/streams-available/$f"
     done
 
+    # Site files left alone above (certbot-modified) still need the
+    # X-Ssl-Cert fix: blocks that do not verify client certificates must not
+    # pass on a client-supplied header. Patched in place (idempotent, a
+    # no-op on fresh templates), backed up, and restored if nginx rejects
+    # the result. The patcher ships in the package, so this needs no
+    # download -- it is how an offline upgrade gets the fix too.
+    if [ -f "$PKGDATA/lib/nginx_clear_ssl_cert.py" ]; then
+      NGINX_FIX_FILES=()
+      for f in raven_http raven_certificate_enrollment; do
+        dst="/etc/nginx/sites-available/$f"
+        [ -f "$dst" ] && grep -q "managed by Certbot" "$dst" && NGINX_FIX_FILES+=("$dst")
+      done
+      if [ "${#NGINX_FIX_FILES[@]}" -gt 0 ]; then
+        TS=$(date +%Y%m%d-%H%M%S)
+        for f in "${NGINX_FIX_FILES[@]}"; do cp -a "$f" "$f.bak-$TS"; done
+        python3 "$PKGDATA/lib/nginx_clear_ssl_cert.py" "${NGINX_FIX_FILES[@]}" || true
+        if nginx -t >/dev/null 2>&1; then
+          for f in "${NGINX_FIX_FILES[@]}"; do cmp -s "$f" "$f.bak-$TS" && rm -f "$f.bak-$TS"; done
+        else
+          echo "nginx rejected the X-Ssl-Cert fix; restored the previous site files (backups kept as *.bak-$TS)." >&2
+          for f in "${NGINX_FIX_FILES[@]}"; do cp -a "$f.bak-$TS" "$f"; done
+        fi
+      fi
+    fi
+
     # Only touch our own site files -- don't blow away unrelated
     # sites-enabled entries an admin may have added by hand (install.sh
     # does `rm -f sites-enabled/*`, which is fine for a from-scratch
@@ -409,7 +434,13 @@ stream {
     systemctl enable nginx
     systemctl restart nginx
 
-    if [ -n "$DOMAIN" ]; then
+    # The offline bundle's install.sh sets RAVEN_OFFLINE_INSTALL=1: there is
+    # no internet, so asking Let's Encrypt would only fail (or hang on a
+    # network that drops packets). The domain is still used for WebRTC.
+    if [ -n "$DOMAIN" ] && [ "${RAVEN_OFFLINE_INSTALL:-0}" = 1 ]; then
+      echo "Offline install: not requesting a Let's Encrypt certificate for ${DOMAIN}; the server uses its own certificate authority."
+      echo "Once this machine is online and ${DOMAIN} resolves to it: sudo dpkg-reconfigure c4raven-server"
+    elif [ -n "$DOMAIN" ]; then
       echo "Requesting a Let's Encrypt certificate for ${DOMAIN}..."
       # Not `certbot --nginx` by hand on failure: that would pick its own
       # block (possibly the 8446 one) -- reconfiguring redoes it in order.
@@ -620,6 +651,18 @@ EOF
           *) echo "Could not publish $(basename "$apk") (seed_plugin.py exit $PUBLISHED). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $DATA_DIR && $FLASK_ENV $APP_HOME/venv/bin/python $PKGDATA/seed_plugin.py $apk\"" ;;
         esac
       done
+
+      # ATAK icon sets: the server downloads these from GitHub on its first
+      # start, which an offline machine cannot do; load the bundled copy
+      # into the (still empty) icons table instead. Exit 3 = already there.
+      if [ -f "$OFFLINE_DIR/icons/iconsets.sqlite" ] && [ -f "$PKGDATA/seed_icons.py" ]; then
+        ICONS=0
+        raven_exec "python '$PKGDATA/seed_icons.py' '$OFFLINE_DIR/icons/iconsets.sqlite'" || ICONS=$?
+        case "$ICONS" in
+          0|3) ;;
+          *) echo "Could not load the bundled ATAK icon sets (seed_icons.py exit $ICONS). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $DATA_DIR && $FLASK_ENV $APP_HOME/venv/bin/python $PKGDATA/seed_icons.py $OFFLINE_DIR/icons/iconsets.sqlite\"" ;;
+        esac
+      fi
 
       # The new services are running from the new venv; drop older ones --
       # but only once raven has answered, so a broken upgrade can still be

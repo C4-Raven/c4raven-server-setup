@@ -71,8 +71,11 @@ if [ -n "$OFFLINE_PAYLOAD" ]; then
 else
   ARCH=all
 fi
-STAGE="$HERE/build/c4raven-server_${PKG_VERSION}_${ARCH}"
-OUT="$HERE/build/c4raven-server_${PKG_VERSION}_${ARCH}.deb"
+# BUILD_DIR: where the staging tree and the .deb go (default build/ here);
+# build-offline.sh passes its own.
+BUILD_DIR="${BUILD_DIR:-$HERE/build}"
+STAGE="$BUILD_DIR/c4raven-server_${PKG_VERSION}_${ARCH}"
+OUT="$BUILD_DIR/c4raven-server_${PKG_VERSION}_${ARCH}.deb"
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/DEBIAN" "$STAGE/lib/systemd/system" "$STAGE/usr/share/c4raven-server"
@@ -203,7 +206,8 @@ for f in "$HERE"/nginx_configs/*; do
   subst "$f" "$STAGE/usr/share/c4raven-server/nginx_configs/$(basename "$f")"
 done
 subst "$HERE/mediamtx.yml" "$STAGE/usr/share/c4raven-server/mediamtx.yml"
-cp "$HERE/rabbitmq.conf" "$HERE/seed_admin.py" "$HERE/seed_plugin.py" "$STAGE/usr/share/c4raven-server/"
+cp "$HERE/rabbitmq.conf" "$HERE/seed_admin.py" "$HERE/seed_plugin.py" "$HERE/seed_icons.py" \
+  "$STAGE/usr/share/c4raven-server/"
 # The shared distro/firewall shim, shipped exactly where the RPM puts it
 # (rpm/build-rpm.sh) so postinst can open the same ports install.sh and
 # rpm/configure.sh do. Optional in the same way it is for the RPM: postinst
@@ -220,6 +224,10 @@ fi
 # shared with install.sh. Required: the maintainer script sources it.
 [ -f "$HERE/lib/installer.sh" ] || { echo "error: lib/installer.sh is missing from this checkout" >&2; exit 1; }
 install -D -m 644 "$HERE/lib/installer.sh" "$STAGE/usr/share/c4raven-server/lib/installer.sh"
+# The X-Ssl-Cert patcher: postinst runs it over the site files it does not
+# overwrite (certbot-modified ones), so an upgrade fixes those too -- with
+# no download, which the offline install could not do.
+install -D -m 644 "$HERE/lib/nginx_clear_ssl_cert.py" "$STAGE/usr/share/c4raven-server/lib/nginx_clear_ssl_cert.py"
 if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE' "$STAGE/usr/share/c4raven-server/"; then
   echo "error: unsubstituted placeholder left in staged data files" >&2
   exit 1

@@ -10,6 +10,11 @@ Everything needed to install the server on a machine with no internet access:
                plugin versions inside
   SHA256SUMS   checksums install.sh verifies before doing anything
 
+Check the copy first: SHA256SUMS next to this .tar (from the build machine)
+covers it. In the directory holding both:
+
+  sha256sum -c --ignore-missing SHA256SUMS
+
 Install:
 
   tar -xf c4raven-server-offline_@VERSION@_@SUITE@_@ARCH@.tar
@@ -19,12 +24,12 @@ Install:
 You'll be asked two questions. Leave the domain name blank on an offline
 network: a Let's Encrypt certificate needs the internet, so the server uses
 its own certificate authority instead. Answer "no" to Cloudflare Turnstile
-for the same reason.
+for the same reason. Nothing in the install uses the network.
 
 What you get: the Raven backend, the web UI (https://<this machine's IP>),
-the certificate authority, mediamtx video streaming, and the CROW Remote
-Clear ATAK plugin already published in the server's plugin repository, so
-devices are offered it when they enrol.
+the certificate authority, mediamtx video streaming, the ATAK icon sets,
+and the CROW Remote Clear ATAK plugin already published in the server's
+plugin repository, so devices are offered it when they enrol.
 
 First login: username "administrator", password "password". You must set a
 real password straight away.
@@ -34,4 +39,5 @@ checks both before touching anything. Other combinations are built as
 separate bundles.
 
 Upgrading: run install.sh from a newer bundle. Your config, certificates,
-database and uploads are kept.
+database and uploads are kept. Running the same bundle again reinstalls it,
+which repairs a half-finished install.

@@ -68,14 +68,51 @@ APT=(apt-get
   -o APT::Get::List-Cleanup=false
   -o APT::Sandbox::User=root)
 
-"${APT[@]}" update
-if ! "${APT[@]}" install -y --no-install-recommends c4raven-server; then
-  echo >&2
-  echo "The install did not finish (see above). Everything done so far is kept;" >&2
-  echo "fix the cause, then resume with:  sudo dpkg --configure -a" >&2
-  echo "or simply re-run:                 sudo $0" >&2
-  exit 1
+# Network guard. Nothing in this install should need the internet: apt reads
+# ./repo only, and the package's setup installs the backend, UI, mediamtx,
+# icon sets and ATAK plugin from inside the .deb and skips Let's Encrypt
+# (RAVEN_OFFLINE_INSTALL=1). Should anything still try to download, point
+# HTTP(S) at a closed local port so it fails at once with a clear cause,
+# instead of hanging on a network that silently drops packets or -- on a box
+# that does have internet -- quietly succeeding and hiding the bug.
+# RAVEN_OFFLINE_GUARD=0 turns the guard off.
+export RAVEN_OFFLINE_INSTALL=1
+if [ "${RAVEN_OFFLINE_GUARD:-1}" != 0 ]; then
+  GUARD=http://127.0.0.1:9
+  export http_proxy=$GUARD https_proxy=$GUARD HTTP_PROXY=$GUARD HTTPS_PROXY=$GUARD
+  export ftp_proxy=$GUARD all_proxy=$GUARD ALL_PROXY=$GUARD
+  export no_proxy=127.0.0.1,localhost,::1 NO_PROXY=127.0.0.1,localhost,::1
+  export PIP_NO_INDEX=1 PIP_CONFIG_FILE=/dev/null COREPACK_ENABLE_NETWORK=0
 fi
+
+offline_failed() {
+  echo >&2
+  echo "The install did not finish (see above). Everything done so far is kept." >&2
+  echo "If the error mentions 127.0.0.1:9, a proxy, a download or a host name," >&2
+  echo "something tried to reach the internet: that is a bug in this bundle --" >&2
+  echo "please report it with the output above." >&2
+  echo "Otherwise fix the cause, then resume with:  sudo dpkg --configure -a" >&2
+  echo "or simply re-run:                           sudo $0" >&2
+  exit 1
+}
+
+"${APT[@]}" update
+
+# Same version already installed: apt would do nothing, so reinstall it --
+# that re-runs the package's setup (idempotent), which is what re-running
+# this script is for (repairing a half-finished or damaged install).
+# A newer bundle over an older install is an ordinary upgrade.
+WANT_VER=$(awk '$1 == "Package:" { p = $2 } p == "c4raven-server" && $1 == "Version:" { print $2; exit }' "$REPO/Packages")
+HAVE_VER=$(dpkg-query -W -f='${db:Status-Abbrev} ${Version}' c4raven-server 2>/dev/null | awk '$1 == "ii" { print $2 }' || true)
+REINSTALL=()
+if [ -n "$HAVE_VER" ] && [ "$HAVE_VER" = "$WANT_VER" ]; then
+  echo "c4raven-server $HAVE_VER is already installed; reinstalling it to re-run its setup."
+  REINSTALL=(--reinstall)
+elif [ -n "$HAVE_VER" ]; then
+  echo "Upgrading c4raven-server $HAVE_VER -> $WANT_VER. Config, certificates, database and uploads are kept."
+fi
+
+"${APT[@]}" install -y --no-install-recommends "${REINSTALL[@]}" c4raven-server || offline_failed
 
 echo
 echo "C4 Raven server @VERSION@ installed from the offline bundle."

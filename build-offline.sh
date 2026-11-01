@@ -5,7 +5,8 @@
 # Usage:
 #   PKG_VERSION=2.3.0 ./build-offline.sh
 #
-# Produces, under build/ (<arch> is TARGET_ARCH, a dpkg architecture name):
+# Produces, under build/ (or BUILD_DIR; <arch> is TARGET_ARCH, a dpkg
+# architecture name):
 #
 #   c4raven-server_<ver>_<arch>.deb
 #       The whole app in one package: the backend and every Python
@@ -19,6 +20,10 @@
 #       RabbitMQ, nginx, ffmpeg, ...) as a local apt repository, and an
 #       install.sh that installs from it alone. This is what to carry to a
 #       machine that has never been online.
+#
+#   SHA256SUMS
+#       sha256 of each file above, for checking a copy after carrying it
+#       across: `sha256sum -c SHA256SUMS` in the directory holding them.
 #
 # Build-time needs (this machine, not the target): internet, git with read
 # access to the C4-Raven repos (they're private -- `gh auth login` or a
@@ -58,6 +63,8 @@
 #   cross-built bundle on real target hardware before shipping it.
 #
 # Optional overrides:
+#   BUILD_DIR             where outputs and the scratch tree go (default:
+#                         build/ next to this script). Needs ~10 GB.
 #   SERVER_SHA / UI_SHA   commits to package (default: each repo's main tip)
 #   SERVER_SRC            package this local c4raven-server checkout, working
 #                         tree as-is (uncommitted changes included), instead
@@ -196,7 +203,10 @@ UI_REPO=https://github.com/C4-Raven/c4raven-ui.git
 PLUGIN_REPO=https://github.com/C4-Raven/c4raven-clear-plugin.git
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="$HERE/build/offline-work"
+BUILD_DIR="${BUILD_DIR:-$HERE/build}"
+mkdir -p "$BUILD_DIR"
+BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
+WORK="$BUILD_DIR/offline-work"
 PAYLOAD="$WORK/payload"
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -234,7 +244,7 @@ UI_SHA="${UI_SHA:-$(git ls-remote "$UI_REPO" refs/heads/main | cut -f1)}"
 [ -n "$SERVER_SHA" ] && [ -n "$UI_SHA" ] || die "could not resolve the main tips (git access to C4-Raven?)"
 
 rm -rf "$WORK"
-mkdir -p "$PAYLOAD"/{wheelhouse/common,ui,mediamtx,plugins} "$WORK/src"
+mkdir -p "$PAYLOAD"/{wheelhouse/common,ui,mediamtx,plugins,icons} "$WORK/src"
 
 # A full clone at an exact commit (not `git archive`): the UI build stamps
 # the git commit hash into the bundle, so it needs a real repository.
@@ -596,6 +606,17 @@ curl -fsSL -o "$PAYLOAD/mediamtx/$MTX" \
 echo "$MEDIAMTX_SHA256  $PAYLOAD/mediamtx/$MTX" | sha256sum -c --quiet \
   || die "mediamtx checksum mismatch"
 
+# --- ATAK icon sets -----------------------------------------------------
+# The server downloads this file from GitHub on its first start and loads it
+# into the icons table; offline, postinst loads the bundled copy instead
+# (seed_icons.py). Pinned to a commit and checksummed like mediamtx.
+ICONSETS_URL=https://raw.githubusercontent.com/brian7704/OpenTAKServer-Installer/9d4406cdd572fe1e58894e4bec0151803d72f31e/iconsets.sqlite
+ICONSETS_SHA256=7733ac2d1959d2ab68b1e23d5b886b2847a5551f121110be59e6ef9a0299ce3a
+log "ATAK icon sets"
+curl -fsSL -o "$PAYLOAD/icons/iconsets.sqlite" "$ICONSETS_URL"
+echo "$ICONSETS_SHA256  $PAYLOAD/icons/iconsets.sqlite" | sha256sum -c --quiet \
+  || die "iconsets.sqlite checksum mismatch"
+
 # --- ATAK plugin --------------------------------------------------------
 log "CROW Remote Clear ATAK plugin"
 if [ -n "${PLUGIN_APK:-}" ]; then
@@ -650,12 +671,13 @@ cp "$APK_SRC" "$PAYLOAD/plugins/"
   echo "plugin       $PLUGIN_SRC"
   echo "plugin_sha256 $(sha256sum "$APK_SRC" | cut -d' ' -f1)"
   echo "python       $PY_VERSIONS"
+  echo "iconsets     $ICONSETS_SHA256"
 } > "$PAYLOAD/MANIFEST"
 
 log "Building the .deb"
-OFFLINE_PAYLOAD="$PAYLOAD" SERVER_SHA="$SERVER_SHA" UI_SHA="$UI_SHA" PKG_VERSION="$PKG_VERSION" \
+BUILD_DIR="$BUILD_DIR" OFFLINE_PAYLOAD="$PAYLOAD" SERVER_SHA="$SERVER_SHA" UI_SHA="$UI_SHA" PKG_VERSION="$PKG_VERSION" \
   "$HERE/build-deb.sh"
-DEB="$HERE/build/c4raven-server_${PKG_VERSION}_${TARGET_ARCH}.deb"
+DEB="$BUILD_DIR/c4raven-server_${PKG_VERSION}_${TARGET_ARCH}.deb"
 [ -f "$DEB" ] || die "build-deb.sh did not produce $DEB"
 
 # --- per-release apt dependency bundles ---------------------------------
@@ -742,17 +764,28 @@ EOF
   cp "$PAYLOAD/MANIFEST" "$B/$name/MANIFEST"
   (cd "$B/$name" && find . -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS)
 
-  tar -C "$B" -cf "$HERE/build/$name.tar" "$name"
-  echo "  $(ls "$B/$name/repo"/*.deb | wc -l) packages, $(du -h "$HERE/build/$name.tar" | cut -f1)"
+  tar -C "$B" -cf "$BUILD_DIR/$name.tar" "$name"
+  echo "  $(ls "$B/$name/repo"/*.deb | wc -l) packages, $(du -h "$BUILD_DIR/$name.tar" | cut -f1)"
 }
 
 for suite in $SUITES; do bundle_suite "$suite"; done
 
+# Outer checksums, for checking the files after carrying them to the target
+# (install.sh checks the bundle's contents itself, but only once unpacked).
+(
+  cd "$BUILD_DIR"
+  files=("$(basename "$DEB")")
+  for suite in $SUITES; do files+=("c4raven-server-offline_${PKG_VERSION}_${suite}_${TARGET_ARCH}.tar"); done
+  sha256sum "${files[@]}" > SHA256SUMS
+  sha256sum --quiet -c SHA256SUMS
+)
+
 log "Done ($TARGET_ARCH)"
 echo "  $DEB ($(du -h "$DEB" | cut -f1))"
 for suite in $SUITES; do
-  f="$HERE/build/c4raven-server-offline_${PKG_VERSION}_${suite}_${TARGET_ARCH}.tar"
+  f="$BUILD_DIR/c4raven-server-offline_${PKG_VERSION}_${suite}_${TARGET_ARCH}.tar"
   echo "  $f ($(du -h "$f" | cut -f1))"
 done
+echo "  $BUILD_DIR/SHA256SUMS"
 echo
 cat "$PAYLOAD/MANIFEST"

@@ -87,21 +87,32 @@ somebody built it for — see [Supported platforms](#supported-platforms).
   assumed to be installed already.
 - `install.sh` — installs from `repo/` only.
 - `MANIFEST` — target architecture, build time, and the exact backend and
-  UI commits, mediamtx version, plugin file and its SHA-256, and Python
-  versions inside.
+  UI commits, mediamtx version, plugin file and its SHA-256, Python
+  versions and the ATAK icon set inside.
 - `SHA256SUMS` — a checksum for every other file in the directory.
 - `README.txt` — these instructions, for whoever carries the disk.
 
 The server `.deb` holds the whole application, pinned at build time: the
 backend and all its Python dependencies as prebuilt wheels, the built web
-UI, mediamtx, and the tak.gov-signed CROW Remote Clear ATAK plugin. The
+UI, mediamtx, the ATAK icon sets (which an online install downloads from
+GitHub on first start), and the tak.gov-signed CROW Remote Clear ATAK
+plugin. The
 plugin is published into the server's plugin repository on install, set to
 install on enrollment, so devices get it with no upload through the web
 UI. A newer APK uploaded later is never downgraded by a package upgrade.
 
-**Verifying it.** `install.sh` runs `sha256sum -c SHA256SUMS` itself and
-stops before touching the system if anything is missing or altered. To
-check by hand before carrying it across, or to see what you are about to
+**Verifying it.** The build writes a `SHA256SUMS` next to the archives
+and the `.deb`, covering each of them. Copy it across with them and, in the
+directory holding them, check the archive before extracting it:
+
+```
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+(`--ignore-missing` skips the archives for other releases you did not
+copy.) Inside the archive, `install.sh` runs `sha256sum -c SHA256SUMS` over
+its own contents and stops before touching the system if anything is
+missing or altered. To check that by hand, or to see what you are about to
 install:
 
 ```
@@ -111,9 +122,9 @@ sha256sum -c SHA256SUMS
 cat MANIFEST
 ```
 
-The archive itself carries no outer signature. If you carry it across
-by hand, take `sha256sum c4raven-server-offline_*.tar` on the build
-machine and compare it on the server before extracting.
+Checksums prove the copy is intact, not who made it: there is no
+signature, so get `SHA256SUMS` from the build machine over a channel you
+trust.
 
 **Installing with no internet.** Copy the archive across (USB disk,
 `scp` on the local network), then on the server:
@@ -129,15 +140,28 @@ It then installs through apt with the bundled repository as the only
 source for that run, so it never reaches for a mirror and never
 downgrades anything already installed. Leave the domain prompt blank and
 answer "no" to Turnstile: without internet there is no Let's Encrypt or
-Cloudflare, and the server's own CA is used instead.
+Cloudflare, and the server's own CA is used instead. (A domain entered
+anyway is used for WebRTC, but no Let's Encrypt request is made; run
+`sudo dpkg-reconfigure c4raven-server` once the machine is online.)
+
+Nothing in the install touches the network: apt reads only `repo/`, and
+the package installs the backend, UI, mediamtx, icon sets and plugin from
+inside itself. As a guard, `install.sh` points HTTP(S) proxies at a closed
+local port for the run, so anything that unexpectedly tries to download
+fails at once with a message saying so, rather than hanging
+(`RAVEN_OFFLINE_GUARD=0` turns that off). CI installs the bundle in a
+container started with `--network none`, upgrading from the previous
+release's bundle, and runs `tests/verify.sh` (`tests/offline-e2e.sh`).
 
 To upgrade, run `install.sh` from a newer bundle; config, certificates,
-database and uploads are kept. There is no source checkout to pull, so
+database and uploads are kept, the database is migrated to the new schema
+on restart (install.sh checks it reached head), and nginx site files
+certbot or an admin edited get the X-Ssl-Cert fix patched in place.
+Re-running the same bundle reinstalls it, re-running its setup. There is no source checkout to pull, so
 this repo's `update.sh` refuses an offline install, and c4raven-updater
 applies only its `config.yml` and nginx fixes to one, not new code.
 
-Building it (on a machine with internet and read access to the C4-Raven
-repos, which are private):
+Building it (on a machine with internet):
 
 ```
 PKG_VERSION=2.3.0 ./build-offline.sh
@@ -159,8 +183,10 @@ via `uv python install 3.12 3.13`). It builds from each repo's `main` tip
 unless `SERVER_SHA`/`UI_SHA`/`PLUGIN_APK` say otherwise, refuses a plugin
 that isn't signed by the TAK Product Center, and before packaging proves
 that the Python wheels install with no index and that each release's
-repository resolves `c4raven-server` on its own. The server `.deb` it also
-leaves in `build/` (`c4raven-server_<version>_amd64.deb`) installs
+repository resolves `c4raven-server` on its own. Output goes to `build/`
+(`BUILD_DIR=...` to put it, and the ~10 GB of scratch, elsewhere). The
+server `.deb` it also leaves there (`c4raven-server_<version>_amd64.deb`)
+installs
 offline on its own too, on a machine that already has the apt
 dependencies. See the header of `build-offline.sh` for every option.
 
@@ -549,6 +575,9 @@ carries `finish-install.sh` and `diagnose-login.sh`; see
   `/opt/raven/venvs/`, swapped on upgrade) instead of the git checkout.
   `offline/` holds the `install.sh` and `README.txt` templates each
   archive ships with.
+- **`seed_icons.py`** — used by the offline package: loads the bundled
+  `iconsets.sqlite` into an empty `icons` table (exit 3 when it already
+  has rows).
 - **`seed_plugin.py`** — used by the offline package: copies a bundled
   APK into the data folder's `packages/`, writes its `packages` row and
   regenerates the `product.infz` indexes. Never downgrades; exit 3 when
