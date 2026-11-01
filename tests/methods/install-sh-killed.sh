@@ -57,10 +57,10 @@ for _ in 1 2 3; do
 done
 wait "$runner" 2>/dev/null
 cp "$TS" /tmp/install-sh.run1.typescript 2>/dev/null || true
-last_step=$(grep -aoE '(Installing|Setting up|Cloning|Creating|Configuring|Building|Waiting|Hardening|Final)[^.]*\.\.\.' "$TS" | tail -1)
-say "run 1 killed during: ${last_step:-unknown}"
 if grep -aq 'Raven backend installed' "$TS"; then
   say "note: poetry install had already finished; the kill landed in a later step"
+else
+  say "run 1 killed inside '$MARK_STEP' (poetry install), as intended"
 fi
 ls -d /opt/raven/c4raven-server/.venv 2>/dev/null && say "half-built venv left behind, as intended"
 
