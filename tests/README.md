@@ -158,7 +158,9 @@ that boots and serves.
   the host kernel, with `/sys/fs/cgroup` bind-mounted. Kernel-version,
   firewall, SELinux-in-practice and real-disk behaviour are all out of scope.
 - *That the offline bundle is self-contained*, except in the `deb-offline`
-  cell, which is the only one installed without a default route.
+  cell (installed without a default route) and `tests/offline-e2e.sh`, which
+  installs in a container started with `--network none` and checks, before
+  and after, that it has no route, no DNS and no reachable address.
 - *Anything on arm64 from an emulated run.* `--emulated` exists for local
   smoke only: Node and the Erlang JIT do not survive QEMU reliably, so an
   emulated failure is not evidence of a bug and an emulated pass is not
@@ -187,8 +189,12 @@ and half the units never start, which reads like an install bug. That is why
   thing).
 - **`install-matrix.yml`** — tier 2. amd64-only on push/PR; the full cross
   product including arm64 nightly (04:17 UTC) and on manual dispatch. The
-  offline-bundle job is opt-in via `workflow_dispatch` because it takes
-  hours.
+  offline-bundle job is opt-in via `workflow_dispatch` (`offline: true`): it
+  builds a noble bundle, then `tests/offline-e2e.sh` installs the 2.2.2
+  bundle (a draft-release fixture), upgrades to the new one and re-runs it,
+  all with `--network none`, checking migrations, preserved config and
+  certificates, the nginx X-Ssl-Cert patch, icons and plugin, and
+  `verify.sh`. About 20 minutes.
 
 ### The arm64 runner label
 
