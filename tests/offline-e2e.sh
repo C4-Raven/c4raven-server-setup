@@ -152,6 +152,16 @@ install_bundle() {
     "$dir/install.sh" > "$logf" 2>&1
   rc=$?
   tail -25 "$logf" >&2
+  if [ "$rc" != 0 ] && [ "${3:-}" = recover ]; then
+    # Bundles before 2.3.0 fail their first configure on a fresh box
+    # (libpq5 is unpacked in the same apt run and not in ld.so.cache yet;
+    # fixed in 2.3.0's postinst). The documented recovery is to resume.
+    warn "$2: install.sh exited $rc; resuming with dpkg --configure -a, as its message says"
+    timeout "${TIMEOUT_MIN}m" "$ENGINE" exec --env DEBIAN_FRONTEND=noninteractive "$NAME" \
+      dpkg --configure -a >> "$logf" 2>&1
+    rc=$?
+    tail -10 "$logf" >&2
+  fi
   [ "$rc" = 0 ] || { fail "$2: install.sh exited $rc (see $logf)"; finish; }
   ok "$2: install.sh succeeded"
 }
@@ -173,7 +183,7 @@ print('|'.join(str(c.get(k)) for k in ('SQLALCHEMY_DATABASE_URI', 'SECRET_KEY', 
 }
 
 if [ -n "$OLD" ]; then
-  install_bundle /opt/harness/old install-old
+  install_bundle /opt/harness/old install-old recover
   x dpkg-query -W -f='old: c4raven-server ${Version}\n' c4raven-server >&2
   # An admin's own key in config.yml, which the upgrade must keep.
   xsh "echo 'OFFLINE_E2E_MARKER: kept-across-upgrade' >> /opt/raven/data/config.yml"
