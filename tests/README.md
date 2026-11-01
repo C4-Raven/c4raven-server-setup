@@ -137,6 +137,14 @@ Methods: `install-sh` (curl|bash, online), `deb` (`build-deb.sh` + apt,
 postinst builds on target), `rpm` (Rocky only), `deb-offline` (bundle built
 on the *host* and bind-mounted in, installed with no default route).
 
+Recovery methods (amd64 cells in CI) prove an install that does not work
+first try can simply be run again: `install-sh-netfail` makes the npm/yarn
+registries unreachable so install.sh dies in the UI step, restores the
+network and re-runs it; `install-sh-killed` SIGKILLs the whole install
+partway through `poetry install` (half-built venv, no traps run) and re-runs
+it. Both then go through `verify.sh` and the reboot check like any other
+cell.
+
 `tests/verify.sh` asserts across: layout/ownership, configuration, the CA
 (cert chains to `ca.pem`, not expired), the five app units plus three distro
 units, listening sockets, a live `GET /api/turnstile`, `nginx -t`, the built

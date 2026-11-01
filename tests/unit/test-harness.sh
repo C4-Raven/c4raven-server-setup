@@ -22,10 +22,10 @@ t_ne "$ALL_DISTROS" "" "ALL_DISTROS is not empty"
 t_ne "$ALL_ARCHES" ""  "ALL_ARCHES is not empty"
 t_ne "$ALL_METHODS" "" "ALL_METHODS is not empty"
 
-t_eq "$(methods_for_distro ubuntu-24.04)" "install-sh deb deb-offline" \
-     "ubuntu runs the three Debian-family methods"
-t_eq "$(methods_for_distro rocky-9)" "install-sh rpm" \
-     "rocky runs install.sh and the rpm, and no .deb path"
+t_eq "$(methods_for_distro ubuntu-24.04)" "install-sh install-sh-netfail install-sh-killed deb deb-offline" \
+     "ubuntu runs install.sh (plain, interrupted, killed) and the Debian-family packages"
+t_eq "$(methods_for_distro rocky-9)" "install-sh install-sh-netfail install-sh-killed rpm" \
+     "rocky runs install.sh (plain, interrupted, killed) and the rpm, and no .deb path"
 t_false "methods_for_distro rejects an unknown distro loudly" -- methods_for_distro freebsd-14
 
 # Every method named in the matrix must have a script, and every script must

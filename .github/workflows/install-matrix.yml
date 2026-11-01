@@ -87,6 +87,10 @@ jobs:
                 ubuntu-*) methods="install-sh deb" ;;
                 rocky-*)  methods="install-sh rpm" ;;
               esac
+              # Recovery cells: install.sh interrupted (registry outage in
+              # the UI step / SIGKILL mid poetry install), then re-run. The
+              # code path is arch-independent, so amd64 only.
+              [ "$a" = amd64 ] && methods="$methods install-sh-netfail install-sh-killed"
               for m in $methods; do
                 entries="$entries{\"distro\":\"$d\",\"arch\":\"$a\",\"method\":\"$m\",\"runner\":\"$runner\"},"
               done

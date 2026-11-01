@@ -116,13 +116,13 @@ ALL_ARCHES="amd64 arm64"
 # deb-offline  build-offline.sh bundle, no network at install time
 # rpm          rpm/build-rpm.sh + dnf install   (Rocky only)
 # shellcheck disable=SC2034
-ALL_METHODS="install-sh deb deb-offline rpm"
+ALL_METHODS="install-sh install-sh-netfail install-sh-killed deb deb-offline rpm"
 
 # Which install methods are meaningful on which distro.
 methods_for_distro() {
   case "$1" in
-    ubuntu-*) echo "install-sh deb deb-offline" ;;
-    rocky-*)  echo "install-sh rpm" ;;
+    ubuntu-*) echo "install-sh install-sh-netfail install-sh-killed deb deb-offline" ;;
+    rocky-*)  echo "install-sh install-sh-netfail install-sh-killed rpm" ;;
     *)        die "unknown distro: $1" ;;
   esac
 }
