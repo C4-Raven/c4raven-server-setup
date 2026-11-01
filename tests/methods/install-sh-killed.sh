@@ -64,8 +64,27 @@ else
 fi
 ls -d /opt/raven/c4raven-server/.venv 2>/dev/null && say "half-built venv left behind, as intended"
 
+# Where the kill lands inside poetry install is luck. Make the worst case
+# certain: a package whose metadata is written but whose files are not
+# (seen in CI: numpy without its openblas library). If numpy is already
+# there, truncate its shared libraries; run 2 must then notice the broken
+# venv and rebuild it rather than skip numpy as installed.
+DAMAGED=""
+# Only when poetry will count numpy as installed (its RECORD is written);
+# otherwise run 2 simply reinstalls it and there is nothing to detect.
+ls /opt/raven/c4raven-server/.venv/lib*/python3*/site-packages/numpy-*.dist-info/RECORD >/dev/null 2>&1 &&
+for so in /opt/raven/c4raven-server/.venv/lib*/python3*/site-packages/numpy.libs/*.so*; do
+  [ -f "$so" ] || continue
+  : > "$so"; DAMAGED=1
+done
+[ -n "$DAMAGED" ] && say "truncated numpy's bundled libraries (half-unpacked wheel)"
+
 say "run 2: running the same install.sh again"
 bash "$HERE/install-sh.sh"
 rc=$?
 say "run 2 exited $rc"
+if [ "$rc" = 0 ] && [ -n "$DAMAGED" ] && ! grep -aq 'does not load' "$TS"; then
+  say "FAIL: run 2 never noticed the damaged numpy (no venv rebuild)"
+  exit 1
+fi
 exit "$rc"
