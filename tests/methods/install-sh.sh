@@ -34,9 +34,9 @@ esac
 # master's copies of all of those, which is worse than not testing at all.
 # curl speaks file://, so rewriting the one assignment is enough.
 #
-# FIXME(upstream): install.sh should read REPO_RAW from the environment
-#   (REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/...}") so this
-#   patch is not needed. Same for update.sh.
+# install.sh now also honours REPO_RAW from the environment, but runuser +
+# script do not reliably carry it through, so the rewrite stays. (update.sh
+# still hardcodes it.)
 if ! grep -q '^REPO_RAW=' install.sh; then
   echo "SKIP: install.sh no longer has a REPO_RAW= assignment to redirect." >&2
   echo "      Update tests/methods/install-sh.sh for its new shape." >&2

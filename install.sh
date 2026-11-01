@@ -37,17 +37,35 @@ WEBROOT="/var/www/html/raven"
 INSTALLER_DIR=$(mktemp -d -t raven_installer.XXXXXXXX)
 cd "$INSTALLER_DIR"
 
-REPO_RAW=https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master
-curl -fsSL "$REPO_RAW/colors.sh" -o "$INSTALLER_DIR/colors.sh"
+# Overridable so the test harness (and anyone installing from a fork or a
+# local checkout: REPO_RAW=file:///path/to/c4raven-server-setup) can point the
+# installer at its own copies of the templates fetched below.
+REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master}"
+
+# Every download goes through curl with retries: a fresh cloud VM's network
+# is often not quite up yet, and GitHub's raw host sheds load with 429/5xx.
+# --retry-connrefused also retries "connection refused" (a proxy still
+# starting); curl's --retry already covers timeouts and transient HTTP codes.
+CURL_RETRY="--retry 5 --retry-delay 3 --retry-connrefused"
+fetch() {
+  # shellcheck disable=SC2086
+  curl -fsSL $CURL_RETRY "$@"
+}
+
+fetch "$REPO_RAW/colors.sh" -o "$INSTALLER_DIR/colors.sh"
 # shellcheck source=/dev/null
 . "$INSTALLER_DIR/colors.sh"
 
-# Everything that differs between distro families lives in lib/distro.sh.
-# This script is normally run as `curl ... | bash`, so the repo is NOT on
-# disk -- fetch the shim exactly the way colors.sh is fetched above.
-curl -fsSL "$REPO_RAW/lib/distro.sh" -o "$INSTALLER_DIR/distro.sh"
+# Everything that differs between distro families lives in lib/distro.sh,
+# and the retry/container/recovery helpers in lib/installer.sh. This script
+# is normally run as `curl ... | bash`, so the repo is NOT on disk -- fetch
+# them exactly the way colors.sh is fetched above.
+fetch "$REPO_RAW/lib/distro.sh" -o "$INSTALLER_DIR/distro.sh"
 # shellcheck source=lib/distro.sh
 . "$INSTALLER_DIR/distro.sh"
+fetch "$REPO_RAW/lib/installer.sh" -o "$INSTALLER_DIR/installer.sh"
+# shellcheck source=lib/installer.sh
+. "$INSTALLER_DIR/installer.sh"
 
 # curl -f catches a 404 or a dead connection, but not a captive portal or
 # transparent proxy that answers 200 with an HTML body: sourcing that dies
@@ -58,9 +76,11 @@ for _fn in detect_distro distro_supported pkg_refresh pkg_install \
            pkg_install_optional apt_noninteractive stack_packages stack_packages_optional \
            setup_extra_repos pg_init node_install firewall_open \
            selinux_fixup nginx_site_file nginx_disable_default_site \
-           nginx_enable_site nginx_remove_site; do
+           nginx_enable_site nginx_remove_site \
+           ih_retry ih_require_systemd ih_clone_repo ih_uri_password ih_uri_user \
+           ih_env_value ih_heads_match ih_heads_py ih_own_logs ih_print_recovery; do
   command -v "$_fn" >/dev/null 2>&1 || {
-    echo "${RED}lib/distro.sh did not load correctly ($_fn is missing) -- aborting before anything on this system is changed.${NC}"
+    echo "${RED}lib/distro.sh or lib/installer.sh did not load correctly ($_fn is missing) -- aborting before anything on this system is changed.${NC}"
     exit 1
   }
 done
@@ -100,6 +120,38 @@ if [ "$(whoami)" == "$APP_USER" ]; then
   echo "${RED}Don't run this as '$APP_USER' directly -- run it as your own sudo-capable user instead.${NC}"
   exit 1
 fi
+
+# Containers: a plain `docker run ubuntu` has no systemd, and this install is
+# nothing but systemd units. Without this check it would apt-install for ten
+# minutes and then die at the first `systemctl`, half done.
+if ! ih_require_systemd; then
+  echo "${RED}Nothing on this system has been changed.${NC}"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Progress + failure reporting. step() names what is happening, so that when
+# a command fails under `set -e` the EXIT trap can say which part of the
+# install stopped and how to resume, rather than leaving a bare error from
+# deep inside apt or poetry as the last line on screen.
+# ---------------------------------------------------------------------------
+CURRENT_STEP="preflight"
+FAIL_LINE=""
+step() {
+  CURRENT_STEP="$1"
+  echo "${GREEN}$1...${NC}"
+}
+on_exit() {
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo
+    echo "${RED}The install stopped while: ${CURRENT_STEP} (exit $rc${FAIL_LINE:+, install.sh line $FAIL_LINE}).${NC}"
+    ih_print_recovery "curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/install.sh | bash"
+  fi
+  rm -rf "$INSTALLER_DIR"
+}
+trap 'FAIL_LINE=$LINENO' ERR
+trap on_exit EXIT
 
 ask_yn() {
   # ask_yn "question" [ENV_VAR] -> returns 0 for yes, 1 for no.
@@ -145,15 +197,18 @@ run_as_pg() {
   sudo su postgres -c "cd ~ && $1"
 }
 
-echo "${GREEN}Installing system packages via ${PKG_MGR}. You may be prompted for your sudo password...${NC}"
+step "Installing system packages via ${PKG_MGR} (you may be prompted for your sudo password)"
 # EL only: EPEL + CRB (certbot, erlang, ffmpeg-free) and the RabbitMQ repo,
 # none of which the names below resolve without. No-op on Debian, where
 # everything is in main/universe.
-setup_extra_repos "$EL_REPOS_SCRIPT"
-pkg_refresh
+ih_retry setup_extra_repos "$EL_REPOS_SCRIPT"
+# Retried: a mirror mid-sync (hash sum mismatch), a dropped connection, or
+# on a freshly booted cloud image unattended-upgrades holding the dpkg lock
+# (apt_noninteractive also waits up to 10 minutes for that lock itself).
+ih_retry pkg_refresh
 # Word splitting is the point here -- stack_packages returns a list.
 # shellcheck disable=SC2046
-pkg_install $(stack_packages)
+ih_retry pkg_install $(stack_packages)
 
 # Packages we'd like but can live without (EL only today: there is no plain
 # ffmpeg outside RPM Fusion and no PostGIS outside PGDG). Losing one of these
@@ -164,7 +219,7 @@ for pkg in $(stack_packages_optional); do
     postgis)            degraded="PostGIS geospatial columns" ;;
     *)                  degraded="anything that needs $pkg" ;;
   esac
-  pkg_install_optional "$pkg" || \
+  ih_retry -n 2 pkg_install_optional "$pkg" || \
     echo "${YELLOW}Could not install '$pkg' -- continuing without it. $degraded will be unavailable.${NC}"
 done
 
@@ -175,22 +230,22 @@ done
 # rpm.nodesource.com, both of which publish amd64 and arm64) unless a
 # new-enough node is already installed.
 if ! node_ok; then
-  echo "${GREEN}Installing Node.js 22 (NodeSource)...${NC}"
+  step "Installing Node.js 22 (NodeSource)"
 fi
-node_install
+ih_retry node_install
 # corepack runs the yarn version c4raven-ui pins; NodeSource ships it, but
 # make sure, since a distro node may not -- and on EL the distro node splits
 # npm into its own package, so `sudo npm` may not exist to install it with.
 COREPACK=$(command -v corepack 2>/dev/null || true)
 if [ -z "$COREPACK" ]; then
-  command -v npm >/dev/null 2>&1 || pkg_install npm
-  sudo npm install -g corepack
+  command -v npm >/dev/null 2>&1 || ih_retry pkg_install npm
+  ih_retry sudo npm install -g corepack
   # By its full path: npm's global prefix is /usr/local, and EL's sudo
   # secure_path (which run_as_app runs under) leaves /usr/local/bin out.
   COREPACK="$(sudo npm prefix -g)/bin/corepack"
 fi
 
-echo "${GREEN}Setting up the dedicated '$APP_USER' account...${NC}"
+step "Setting up the dedicated '$APP_USER' account"
 if ! id "$APP_USER" &>/dev/null; then
   sudo useradd --system --create-home --home-dir "$APP_HOME" --shell /bin/bash "$APP_USER"
   sudo chmod 750 "$APP_HOME"
@@ -202,13 +257,15 @@ run_as_app "mkdir -p '$DATA_DIR/logs'"
 # dependency versions in poetry.lock, so `pip install -e` (which ignores
 # the lockfile) is not equivalent)
 # ---------------------------------------------------------------------------
-echo "${GREEN}Cloning and installing the Raven backend...${NC}"
-if ! sudo test -d "$APP_HOME/c4raven-server"; then
-  run_as_app "git clone https://github.com/C4-Raven/c4raven-server.git '$APP_HOME/c4raven-server'"
-fi
+step "Cloning and installing the Raven backend"
+# An existing checkout is used as it is (never pulled or reset: updating it
+# is c4raven-updater's job, and a re-run must not move it under a database
+# migrated by the code that is there). A clone a network drop cut short is
+# detected and redone.
+ih_clone_repo run_as_app https://github.com/C4-Raven/c4raven-server.git "$APP_HOME/c4raven-server"
 
 if ! sudo test -x "$APP_HOME/.local/bin/poetry"; then
-  run_as_app "curl -sSL https://install.python-poetry.org | $PYTHON_BIN -"
+  ih_retry run_as_app "set -o pipefail; curl -fsSL $CURL_RETRY https://install.python-poetry.org | $PYTHON_BIN -"
 fi
 run_as_app "poetry config virtualenvs.in-project true"
 # c4raven-server pins python = ">=3.10, <3.15". EL9's `python3` is 3.9, so
@@ -219,7 +276,9 @@ run_as_app "poetry config virtualenvs.in-project true"
 if [ "$DISTRO_FAMILY" = rhel ]; then
   run_as_app "cd '$APP_HOME/c4raven-server' && poetry env use \$(command -v $PYTHON_BIN)"
 fi
-run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
+# Retried: PyPI and files.pythonhosted.org time out often enough on a
+# fresh VM to matter. Re-running resumes; poetry skips what is installed.
+ih_retry run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
 
 # There's no top-level app.py/wsgi.py for Flask's CLI to auto-discover, and
 # RAVEN_DATA_FOLDER has to be set for every ad-hoc `flask raven ...` call
@@ -227,13 +286,21 @@ run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
 # file doesn't exist yet the first time we run these).
 FLASK_ENV="FLASK_APP=raven.app RAVEN_DATA_FOLDER='$DATA_DIR'"
 
+# Writes config.yml only if there isn't one: an existing config.yml (a
+# re-run, or a reinstall over a working server) is kept exactly as it is.
 run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven generate-config"
+
+# New settings (RAVEN_CONNECTION_PROFILE_REQUIRE_AUTH in 2.3.0, ...) come with
+# the fresh config.yml generate-config writes. An existing config.yml is
+# deliberately NOT given them: a key written into config.yml overrides the
+# environment variable of the same name, and the app already falls back to
+# DefaultConfig's value for any key that is absent.
 echo "${GREEN}Raven backend installed.${NC}"
 
 # ---------------------------------------------------------------------------
 # PostgreSQL
 # ---------------------------------------------------------------------------
-echo "${GREEN}Setting up PostgreSQL...${NC}"
+step "Setting up PostgreSQL"
 # Debian's packaging creates a cluster and starts it at install time; EL's
 # leaves the data directory empty and the service refusing to start until
 # `postgresql-setup --initdb` has run, and then defaults host connections to
@@ -241,7 +308,20 @@ echo "${GREEN}Setting up PostgreSQL...${NC}"
 # pg_init does whichever of those apply, idempotently, and leaves the
 # run_as_pg (`sudo su postgres`) calls below working unchanged on both.
 pg_init
+# pg_init has just (re)started the server; give it a moment to accept
+# connections rather than failing the first psql on a slow box.
+for _ in $(seq 30); do
+  run_as_pg "pg_isready -q" 2>/dev/null && break
+  sleep 1
+done
 DB_USER_EXISTS=$(run_as_pg "psql -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_NAME'\"")
+# The role's password works iff libpq can log in with it over TCP, exactly
+# the way the app does.
+db_password_works() {
+  [ -n "$1" ] && PGPASSWORD="$1" PGCONNECT_TIMEOUT=5 \
+    psql -h 127.0.0.1 -U "$DB_NAME" -d postgres -XtAc 'SELECT 1' >/dev/null 2>&1
+}
+POSTGRESQL_PASSWORD=""
 if [ "$DB_USER_EXISTS" != 1 ]; then
   # Hex only: this goes raw into a URI, where `%` would be percent-decoded
   # by SQLAlchemy/libpq. (Not `tr ... | head -c`: under pipefail, head
@@ -249,7 +329,33 @@ if [ "$DB_USER_EXISTS" != 1 ]; then
   POSTGRESQL_PASSWORD=$(openssl rand -hex 16)
   run_as_pg "psql -c \"create role $DB_NAME with login password '${POSTGRESQL_PASSWORD}';\""
 else
-  read -rp "${GREEN}PostgreSQL user '$DB_NAME' already exists -- enter its password: ${NC}" POSTGRESQL_PASSWORD < /dev/tty
+  # A re-run (or a reinstall over a working server): the role is there, and
+  # its password is in config.yml and/or .raven-secrets.env from that run.
+  # Recover it rather than asking -- a prompt here used to stall unattended
+  # re-runs, and a mistyped answer broke the server's DB login.
+  for _uri in \
+      "$(sudo sed -n 's/^SQLALCHEMY_DATABASE_URI: *//p' "$DATA_DIR/config.yml" 2>/dev/null | tr -d "'\"" || true)" \
+      "$(sudo cat "$APP_HOME/.raven-secrets.env" 2>/dev/null | sed -n 's/^SQLALCHEMY_DATABASE_URI=//p' | tr -d "'\"" || true)" \
+      "postgresql://$DB_NAME:${RAVEN_DB_PASSWORD:-}@127.0.0.1/$DB_NAME"; do
+    [ "$(ih_uri_user "$_uri" 2>/dev/null || true)" = "$DB_NAME" ] || continue
+    _pw=$(ih_uri_password "$_uri" 2>/dev/null || true)
+    if db_password_works "$_pw"; then
+      POSTGRESQL_PASSWORD="$_pw"
+      break
+    fi
+  done
+  unset _uri _pw
+  if [ -n "$POSTGRESQL_PASSWORD" ]; then
+    echo "${GREEN}PostgreSQL role '$DB_NAME' already exists; reusing its password from the previous install.${NC}"
+  else
+    # Nothing on disk logs in. The role belongs to this install alone (its
+    # only consumers are config.yml and .raven-secrets.env, both rewritten
+    # below), so give it a fresh password instead of failing. The data in
+    # the database is untouched.
+    echo "${YELLOW}PostgreSQL role '$DB_NAME' exists but no saved password works for it; setting a new one (database contents are untouched).${NC}"
+    POSTGRESQL_PASSWORD=$(openssl rand -hex 16)
+    run_as_pg "psql -c \"alter role $DB_NAME with login password '${POSTGRESQL_PASSWORD}';\""
+  fi
 fi
 DB_URI="postgresql+psycopg://$DB_NAME:${POSTGRESQL_PASSWORD}@127.0.0.1/$DB_NAME"
 run_as_app "$PYTHON_BIN - '$DB_URI' << 'PYEOF'
@@ -263,6 +369,7 @@ with open(path, 'w') as f:
     yaml.safe_dump(conf, f)
 PYEOF"
 
+step "Creating the database"
 DB_EXISTS=$(run_as_pg "psql -XtAc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\"")
 if [ "$DB_EXISTS" != 1 ]; then
   run_as_pg "psql -c 'create database $DB_NAME;'"
@@ -279,14 +386,20 @@ run_as_pg "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS postgis'" || \
 echo "${GREEN}Database ready.${NC}"
 # Migrations run automatically inside the app itself on every startup
 # (see init_extensions() in raven/app.py) -- no separate `flask db upgrade`
-# step needed or wanted here.
+# step here. The final health check below confirms the database actually
+# reached the code's alembic head(s), and says so loudly if it did not.
 
 # ---------------------------------------------------------------------------
 # Cloudflare Turnstile (bot protection on login)
 # ---------------------------------------------------------------------------
 # Unattended: RAVEN_TURNSTILE_ENABLE=true plus RAVEN_TURNSTILE_SITE_KEY and
 # RAVEN_TURNSTILE_SECRET_KEY (a key left unset is still asked for).
-if ask_yn "Enable Cloudflare Turnstile (the human-verification checkbox) on the login page?" RAVEN_TURNSTILE_ENABLE; then
+# On a re-run where Turnstile is already on (and the environment does not
+# say otherwise), leave it be rather than asking again.
+TURNSTILE_ALREADY=$(sudo sed -n 's/^RAVEN_TURNSTILE_ENABLE: *//p' "$DATA_DIR/config.yml" 2>/dev/null || true)
+if [ -z "${RAVEN_TURNSTILE_ENABLE+x}" ] && [ "$TURNSTILE_ALREADY" = true ]; then
+  echo "${GREEN}Cloudflare Turnstile is already enabled in config.yml; keeping its keys.${NC}"
+elif ask_yn "Enable Cloudflare Turnstile (the human-verification checkbox) on the login page?" RAVEN_TURNSTILE_ENABLE; then
   TURNSTILE_SITE_KEY="${RAVEN_TURNSTILE_SITE_KEY:-}"
   TURNSTILE_SECRET_KEY="${RAVEN_TURNSTILE_SECRET_KEY:-}"
   if [ -z "$TURNSTILE_SITE_KEY" ] || [ -z "$TURNSTILE_SECRET_KEY" ]; then
@@ -316,33 +429,75 @@ fi
 # ---------------------------------------------------------------------------
 # Unattended: RAVEN_DOMAIN=tak.example.org, or RAVEN_DOMAIN= (set but empty)
 # for no domain. Either way the question is not asked.
+#
+# The answer is remembered in $APP_HOME/.install-answers, so a re-run after a
+# failure resumes with the same domain instead of asking again (and, if the
+# question were answered differently, tearing down the domain's 8446 block).
+# RAVEN_DOMAIN in the environment always wins.
+ANSWERS_FILE="$APP_HOME/.install-answers"
+PREV_DOMAIN=""
+if sudo test -f "$ANSWERS_FILE"; then
+  PREV_DOMAIN=$(sudo sed -n 's/^RAVEN_DOMAIN=//p' "$ANSWERS_FILE" | tail -n 1)
+fi
 DOMAIN="${RAVEN_DOMAIN:-}"
-if [ -z "${RAVEN_DOMAIN+x}" ] && ask_yn "Do you want to configure a public domain name for this server?"; then
+if [ -z "${RAVEN_DOMAIN+x}" ] && sudo test -f "$ANSWERS_FILE" && sudo grep -q '^RAVEN_DOMAIN=' "$ANSWERS_FILE"; then
+  DOMAIN="$PREV_DOMAIN"
+  echo "${GREEN}Using the domain from the previous run: ${DOMAIN:-(none)}. Set RAVEN_DOMAIN=... (or RAVEN_DOMAIN= for none) to change it.${NC}"
+elif [ -z "${RAVEN_DOMAIN+x}" ] && ask_yn "Do you want to configure a public domain name for this server?"; then
   read -rp "${GREEN}Domain (e.g. tak.example.com, must already point at this server's IP): ${NC}" DOMAIN < /dev/tty
 fi
+printf 'RAVEN_DOMAIN=%s\n' "$DOMAIN" | sudo tee "$ANSWERS_FILE" >/dev/null
+sudo chmod 600 "$ANSWERS_FILE"
 
 # ---------------------------------------------------------------------------
 # Certificate authority
 # ---------------------------------------------------------------------------
-echo "${GREEN}Creating the certificate authority...${NC}"
+step "Creating the certificate authority"
+# create-ca is a no-op when the CA exists. issue-server-certificate is NOT:
+# it wipes and regenerates certs/raven/ (CertificateAuthority.issue_certificate
+# does an unconditional rmtree), so only run it when there is no server
+# certificate yet -- a re-run must not swap the cert nginx and mediamtx use.
+# Same guard as debian/c4raven-server.postinst and rpm/configure.sh.
 run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven create-ca"
-run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven issue-server-certificate"
+if ! sudo test -s "$DATA_DIR/ca/certs/raven/raven.pem" || ! sudo test -s "$DATA_DIR/ca/certs/raven/raven.nopass.key"; then
+  run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run flask raven issue-server-certificate"
+else
+  echo "${GREEN}Keeping the existing server certificate.${NC}"
+fi
+if ! sudo test -s "$DATA_DIR/ca/ca.pem" || ! sudo test -s "$DATA_DIR/ca/certs/raven/raven.pem"; then
+  echo "${RED}The certificate authority or server certificate was not created (no $DATA_DIR/ca/ca.pem or certs/raven/raven.pem).${NC}"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # mediamtx
 # ---------------------------------------------------------------------------
-echo "${GREEN}Installing mediamtx...${NC}"
+step "Installing mediamtx"
+MEDIAMTX_VERSION=1.13.0
 run_as_app "mkdir -p '$DATA_DIR/mediamtx/recordings'"
-if ! sudo test -f "$DATA_DIR/mediamtx/mediamtx"; then
-  # lastversion is one of the backend's own dependencies, so it's already in
-  # the Poetry venv; run it from there (`poetry run` needs the project cwd).
+if ! sudo test -x "$DATA_DIR/mediamtx/mediamtx"; then
   # ARCH_MTX is this machine in mediamtx's release-asset spelling
-  # (amd64/arm64/armv7) -- same mapping this script has always used, now in
-  # detect_distro so the RPM/DEB scriptlets get it too.
-  run_as_app "cd '$APP_HOME/c4raven-server' && poetry run lastversion --filter '~*linux_$ARCH_MTX' --only 1.13.0 -o '$DATA_DIR/mediamtx/mediamtx.tar.gz' --assets download bluenviron/mediamtx"
-  run_as_app "cd '$DATA_DIR/mediamtx' && tar -xf mediamtx.tar.gz && rm -f mediamtx.tar.gz"
+  # (amd64/arm64/armv7), from detect_distro. The version is pinned, so the
+  # asset URL is known: fetch it directly (with retries) rather than asking
+  # the GitHub API, whose 60-requests/hour anonymous limit is easy to hit
+  # from a shared NAT. lastversion (a backend dependency, already in the
+  # Poetry venv) remains the fallback. Downloaded to a temporary name and
+  # checked before extraction, so an interrupted download is redone on the
+  # next run instead of leaving a corrupt archive behind.
+  MTX_TGZ="$DATA_DIR/mediamtx/mediamtx.tar.gz.part"
+  MTX_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/mediamtx_v${MEDIAMTX_VERSION}_linux_${ARCH_MTX}.tar.gz"
+  if ! ih_retry run_as_app "curl -fsSL $CURL_RETRY '$MTX_URL' -o '$MTX_TGZ' && tar -tzf '$MTX_TGZ' >/dev/null"; then
+    echo "${YELLOW}Direct mediamtx download failed; trying lastversion...${NC}"
+    ih_retry run_as_app "cd '$APP_HOME/c4raven-server' && rm -f '$MTX_TGZ' && poetry run lastversion --filter '~*linux_$ARCH_MTX' --only $MEDIAMTX_VERSION -o '$MTX_TGZ' --assets download bluenviron/mediamtx && tar -tzf '$MTX_TGZ' >/dev/null"
+  fi
+  run_as_app "cd '$DATA_DIR/mediamtx' && tar -xzf '$MTX_TGZ' mediamtx && rm -f '$MTX_TGZ'"
 fi
-run_as_app "curl -fsSL '$REPO_RAW/mediamtx.yml' -o '$DATA_DIR/mediamtx/mediamtx.yml'"
+# Kept when present: mediamtx.yml is the admin's (and Raven rewrites parts of
+# it at runtime). The substitutions below only touch placeholders, so they
+# are no-ops on a file a previous run already filled in.
+if ! sudo test -s "$DATA_DIR/mediamtx/mediamtx.yml"; then
+  run_as_app "curl -fsSL $CURL_RETRY '$REPO_RAW/mediamtx.yml' -o '$DATA_DIR/mediamtx/mediamtx.yml.part' && mv '$DATA_DIR/mediamtx/mediamtx.yml.part' '$DATA_DIR/mediamtx/mediamtx.yml'"
+fi
 sudo sed -i \
   -e "s~OTS_FOLDER~$DATA_DIR~g" \
   -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
@@ -379,7 +534,7 @@ EOF
 # ---------------------------------------------------------------------------
 # nginx
 # ---------------------------------------------------------------------------
-echo "${GREEN}Configuring nginx...${NC}"
+step "Configuring nginx"
 # Where these files go differs per family and is decided by lib/distro.sh:
 # Debian has sites-available + a sites-enabled symlink farm, EL includes
 # /etc/nginx/conf.d/*.conf straight from http{} with nothing to symlink and a
@@ -415,14 +570,23 @@ nginx_disable_default_site || true
 # /socket.io block. Debian's nginx package ships that file; EL's does not,
 # and nginx refuses to load its entire configuration over a missing include.
 if [ ! -f /etc/nginx/proxy_params ]; then
-  sudo curl -fsSL "$REPO_RAW/rpm/proxy_params" -o /etc/nginx/proxy_params
+  fetch "$REPO_RAW/rpm/proxy_params" -o "$INSTALLER_DIR/proxy_params"
+  sudo install -m 644 "$INSTALLER_DIR/proxy_params" /etc/nginx/proxy_params
 fi
 
+# Fetched to the installer's temp dir first and only then moved into place:
+# a download that dies halfway must not leave nginx a truncated site file.
+# (These templates are refreshed on every run -- that is how a re-run picks
+# up fixes such as the X-Ssl-Cert clearing. certbot's edits to raven_https
+# are redone by the certbot step below.)
+for f in raven_http raven_https raven_certificate_enrollment rabbitmq mediamtx; do
+  fetch "$REPO_RAW/nginx_configs/$f" -o "$INSTALLER_DIR/nginx_$f"
+done
 for f in raven_http raven_https raven_certificate_enrollment; do
-  sudo curl -fsSL "$REPO_RAW/nginx_configs/$f" -o "$(nginx_site_file "$f")"
+  sudo install -m 644 "$INSTALLER_DIR/nginx_$f" "$(nginx_site_file "$f")"
 done
 for f in rabbitmq mediamtx; do
-  sudo curl -fsSL "$REPO_RAW/nginx_configs/$f" -o "$(nginx_stream_file "$f")"
+  sudo install -m 644 "$INSTALLER_DIR/nginx_$f" "$(nginx_stream_file "$f")"
 done
 
 for f in "$(nginx_site_file raven_https)" "$(nginx_site_file raven_certificate_enrollment)" \
@@ -486,7 +650,16 @@ firewall_open 80/tcp 443/tcp 8080/tcp 8443/tcp 8446/tcp 8322/tcp 1936/tcp 8883/t
 nginx_remove_site raven_certificate_enrollment_domain
 
 sudo systemctl enable nginx
-sudo systemctl restart nginx
+if ! NGINX_T=$(sudo nginx -t 2>&1); then
+  printf '%s\n' "$NGINX_T"
+  echo "${RED}nginx rejected its configuration (above). A leftover or hand-edited file in $NGINX_SITES_DIR is the usual cause.${NC}"
+  exit 1
+fi
+if ! sudo systemctl restart nginx; then
+  sudo journalctl -u nginx -n 20 --no-pager || true
+  echo "${RED}nginx would not start (log above). If it says 'Address already in use', another web server (apache2, caddy, a second nginx) holds port 80/443 -- see: sudo ss -ltnp${NC}"
+  exit 1
+fi
 
 if [ -n "$DOMAIN" ]; then
   echo "${GREEN}Requesting a Let's Encrypt certificate for ${DOMAIN}...${NC}"
@@ -510,8 +683,10 @@ if [ -n "$DOMAIN" ]; then
             | sed -n 's/^[[:space:]]*Certificate Path:[[:space:]]*//p' | sed -n 1p || true)
   [ -n "$LE_CERT" ] && LE_DIR=$(dirname "$LE_CERT")
   if sudo openssl x509 -checkend 0 -noout -in "$LE_DIR/fullchain.pem" >/dev/null 2>&1; then
-    sudo curl -fsSL "$REPO_RAW/nginx_configs/raven_certificate_enrollment_domain" \
-      -o "$(nginx_site_file raven_certificate_enrollment_domain)"
+    fetch "$REPO_RAW/nginx_configs/raven_certificate_enrollment_domain" \
+      -o "$INSTALLER_DIR/nginx_raven_certificate_enrollment_domain"
+    sudo install -m 644 "$INSTALLER_DIR/nginx_raven_certificate_enrollment_domain" \
+      "$(nginx_site_file raven_certificate_enrollment_domain)"
     sudo sed -i -e "s~/etc/letsencrypt/live/DOMAIN_NAME~$LE_DIR~g" -e "s~DOMAIN_NAME~$DOMAIN~g" \
       "$(nginx_site_file raven_certificate_enrollment_domain)"
     nginx_enable_site raven_certificate_enrollment_domain
@@ -537,18 +712,23 @@ fi
 # ---------------------------------------------------------------------------
 # Frontend
 # ---------------------------------------------------------------------------
-echo "${GREEN}Building and deploying the C4 Raven UI frontend...${NC}"
-if ! sudo test -d "$APP_HOME/c4raven-ui"; then
-  run_as_app "git clone https://github.com/C4-Raven/c4raven-ui.git '$APP_HOME/c4raven-ui'"
-fi
+step "Building and deploying the C4 Raven UI frontend"
+ih_clone_repo run_as_app https://github.com/C4-Raven/c4raven-ui.git "$APP_HOME/c4raven-ui"
 # c4raven-ui pins yarn 4 (packageManager in package.json) -- npm doesn't
 # understand its lockfile and will silently downgrade/corrupt it. `corepack
 # yarn` runs the pinned version directly without needing `corepack enable`
 # (which needs root to symlink into /usr/bin).
 # COREPACK_ENABLE_DOWNLOAD_PROMPT=0: never stop to ask before downloading
 # the pinned yarn (a prompt here would read from the piped script).
-run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn install --immutable"
-run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn build"
+# Retried: corepack downloads yarn itself from the npm registry, and yarn
+# then fetches a few hundred packages -- the most network-hungry step here.
+ih_retry run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn install --immutable"
+# Not retried: a build failure is deterministic. The usual cause is memory
+# (tsc + vite want roughly 2 GB); say so.
+if ! run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 '$COREPACK' yarn build"; then
+  echo "${RED}The UI build failed. If the log above ends in 'Killed' or 'heap out of memory', this machine needs about 2 GB of free memory (add swap) for the build.${NC}"
+  exit 1
+fi
 # Deploy as root, not as $APP_USER: whatever previously owned files are in
 # the webroot (a from-scratch install won't have any, but a re-run or a
 # webroot that predates this script easily can, e.g. www-data from a
@@ -571,7 +751,7 @@ selinux_fix_webroot "$WEBROOT"
 # ---------------------------------------------------------------------------
 # RabbitMQ (before the Raven services start: they connect to it on boot)
 # ---------------------------------------------------------------------------
-echo "${GREEN}Configuring RabbitMQ...${NC}"
+step "Configuring RabbitMQ"
 # Enable the plugins BEFORE rabbitmq.conf mentions their settings (mqtt.*,
 # auth_http.*): RabbitMQ refuses to start on a setting it has no schema for
 # ("Conf file attempted to set unknown variable"), and with `set -e` that
@@ -579,7 +759,8 @@ echo "${GREEN}Configuring RabbitMQ...${NC}"
 # raven services below were ever created, leaving a server nobody can log
 # in to. --offline works whether or not the broker is running.
 sudo rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
-sudo curl -fsSL "$REPO_RAW/rabbitmq.conf" -o /etc/rabbitmq/rabbitmq.conf
+fetch "$REPO_RAW/rabbitmq.conf" -o "$INSTALLER_DIR/rabbitmq.conf"
+sudo install -D -m 644 "$INSTALLER_DIR/rabbitmq.conf" /etc/rabbitmq/rabbitmq.conf
 # RabbitMQ 4.x (EL always gets it from rabbitmq.com; newer Debian/Ubuntu ship
 # it too) refuses transient non-exclusive queues by default -- the ones
 # cot_parser, eud_handler and the Marti APIs declare -- with
@@ -614,16 +795,27 @@ fi
 # ---------------------------------------------------------------------------
 # Secrets env file + systemd units for the Raven services
 # ---------------------------------------------------------------------------
-echo "${GREEN}Installing systemd services...${NC}"
+step "Installing systemd services"
 
-sudo tee "$APP_HOME/.raven-secrets.env" >/dev/null << EOF
-RAVEN_DATA_FOLDER=$DATA_DIR
-SQLALCHEMY_DATABASE_URI=$DB_URI
-RAVEN_RABBITMQ_USERNAME=guest
-RAVEN_RABBITMQ_PASSWORD=guest
-RAVEN_FEDHUB_ENABLE=False
-RAVEN_MEDIAMTX_ENABLE=True
-EOF
+# Merged, not overwritten: on a re-run keep what an earlier run or the admin
+# set (Federation Hub on, changed RabbitMQ credentials, extra variables);
+# only the data folder and the database URI are always (re)written.
+SECRETS_OLD=$(sudo cat "$APP_HOME/.raven-secrets.env" 2>/dev/null || true)
+secret_or() {
+  local v
+  v=$(printf '%s\n' "$SECRETS_OLD" | sed -n "s/^$1=//p" | tail -n 1)
+  printf '%s' "${v:-$2}"
+}
+{
+  echo "RAVEN_DATA_FOLDER=$DATA_DIR"
+  echo "SQLALCHEMY_DATABASE_URI=$DB_URI"
+  echo "RAVEN_RABBITMQ_USERNAME=$(secret_or RAVEN_RABBITMQ_USERNAME guest)"
+  echo "RAVEN_RABBITMQ_PASSWORD=$(secret_or RAVEN_RABBITMQ_PASSWORD guest)"
+  echo "RAVEN_FEDHUB_ENABLE=$(secret_or RAVEN_FEDHUB_ENABLE False)"
+  echo "RAVEN_MEDIAMTX_ENABLE=$(secret_or RAVEN_MEDIAMTX_ENABLE True)"
+  printf '%s\n' "$SECRETS_OLD" | grep -vE '^(RAVEN_DATA_FOLDER|SQLALCHEMY_DATABASE_URI|RAVEN_RABBITMQ_USERNAME|RAVEN_RABBITMQ_PASSWORD|RAVEN_FEDHUB_ENABLE|RAVEN_MEDIAMTX_ENABLE)=' | sed '/^$/d' || true
+} | sudo tee "$APP_HOME/.raven-secrets.env" >/dev/null
+unset SECRETS_OLD
 sudo chown "$APP_USER:$APP_USER" "$APP_HOME/.raven-secrets.env"
 sudo chmod 600 "$APP_HOME/.raven-secrets.env"
 
@@ -670,15 +862,22 @@ done
 
 sudo systemctl daemon-reload
 sudo systemctl enable mediamtx raven cot_parser eud_handler eud_handler_ssl
-sudo systemctl start mediamtx raven cot_parser eud_handler eud_handler_ssl
+ih_own_logs "$DATA_DIR/logs" "$APP_USER"
+# restart, not start: on a re-run they are already running, with whatever
+# config (database password, secrets file, units) the previous run left.
+sudo systemctl restart mediamtx raven cot_parser eud_handler eud_handler_ssl
 
 # The database schema is created by the migrations the server runs on
 # startup, so wait for it to answer before anything touches the database.
-echo "${GREEN}Waiting for the Raven server to come up...${NC}"
-for i in $(seq 1 60); do
+# Up to 5 minutes: a first start runs every migration from scratch, which
+# on a small VM or an SD card takes a while.
+step "Waiting for the Raven server to come up (runs database migrations)"
+
+for i in $(seq 1 150); do
   if curl -fsS -o /dev/null http://127.0.0.1:8081/api/health 2>/dev/null; then break; fi
-  if [ "$i" -eq 60 ]; then
-    echo "${YELLOW}raven did not answer on 127.0.0.1:8081 after 2 minutes -- check $DATA_DIR/logs/raven.log${NC}"
+  if [ "$i" -eq 150 ]; then
+    echo "${YELLOW}raven did not answer on 127.0.0.1:8081 after 5 minutes. Last lines of $DATA_DIR/logs/raven.log:${NC}"
+    sudo tail -n 30 "$DATA_DIR/logs/raven.log" 2>/dev/null || true
   fi
   sleep 2
 done
@@ -722,11 +921,11 @@ if [ "$FEDHUB_AVAILABLE" = true ] && { [ -n "$FEDHUB_DEB" ] || { [ -z "${RAVEN_F
     else
       MONGO_REPO="https://repo.mongodb.org/apt/ubuntu $MONGO_CODENAME/mongodb-org/$MONGO_VER multiverse"
     fi
-    curl -fsSL "https://www.mongodb.org/static/pgp/server-$MONGO_VER.asc" | sudo gpg --dearmor --yes -o "/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg"
+    fetch "https://www.mongodb.org/static/pgp/server-$MONGO_VER.asc" | sudo gpg --dearmor --yes -o "/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg"
     echo "deb [signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg] $MONGO_REPO" | \
       sudo tee "/etc/apt/sources.list.d/mongodb-org-$MONGO_VER.list" > /dev/null
-    apt_noninteractive update
-    pkg_install mongodb-org
+    ih_retry apt_noninteractive update
+    ih_retry pkg_install mongodb-org
     sudo systemctl enable --now mongod
 
     echo "${GREEN}Installing Federation Hub...${NC}"
@@ -761,14 +960,64 @@ fi
 # first login (or creates it that way if it doesn't exist yet). Exit 3 =
 # real accounts already exist, nothing touched.
 # ---------------------------------------------------------------------------
-echo "${GREEN}Hardening the first administrator account...${NC}"
-run_as_app "curl -fsSL '$REPO_RAW/seed_admin.py' -o '$APP_HOME/seed_admin.py'"
+step "Hardening the first administrator account"
+run_as_app "curl -fsSL $CURL_RETRY '$REPO_RAW/seed_admin.py' -o '$APP_HOME/seed_admin.py'"
 SEEDED=0
 run_as_app "cd '$APP_HOME/c4raven-server' && $FLASK_ENV poetry run python '$APP_HOME/seed_admin.py'" || SEEDED=$?
 
-rm -rf "$INSTALLER_DIR"
+# ---------------------------------------------------------------------------
+# Final health check: prove the install works instead of assuming it. Every
+# check runs (none stops the others) and the summary says which failed.
+# ---------------------------------------------------------------------------
+step "Final health check"
+HC_FAILED=()
+hc_pass() { printf '  %sPASS%s  %s\n' "$GREEN" "$NC" "$1"; }
+hc_fail() { printf '  %sFAIL%s  %s\n' "$RED" "$NC" "$1"; HC_FAILED+=("$1"); }
+hc_warn() { printf '  %sWARN%s  %s\n' "$YELLOW" "$NC" "$1"; }
+
+# Services: allow ~20s, since Restart=always units that just (re)started can
+# be between attempts at the instant we look.
+for svc in "$PG_SERVICE" "$RABBIT_SERVICE" nginx mediamtx raven cot_parser eud_handler eud_handler_ssl; do
+  ok=""
+  for _ in $(seq 10); do
+    if sudo systemctl is-active --quiet "$svc"; then ok=1; break; fi
+    sleep 2
+  done
+  if [ -n "$ok" ]; then hc_pass "service $svc is active"; else hc_fail "service $svc is active (see: sudo journalctl -u $svc -n 50)"; fi
+done
+
+if sudo nginx -t >/dev/null 2>&1; then hc_pass "nginx -t"; else hc_fail "nginx -t (run it to see why)"; fi
+
+http_code() { curl -sk -o /dev/null -m 10 -w '%{http_code}' "$@" 2>/dev/null || true; }
+code=$(http_code http://127.0.0.1:8081/api/health)
+if [ "$code" = 200 ]; then hc_pass "backend /api/health answers 200"; else hc_fail "backend /api/health answers 200 (got ${code:-nothing}; see $DATA_DIR/logs/raven.log)"; fi
+code=$(http_code -H 'Accept: application/json' https://127.0.0.1/api/login)
+if [ "$code" = 200 ]; then hc_pass "login endpoint via nginx (https://127.0.0.1/api/login) answers 200"; else hc_fail "login endpoint via nginx (https://127.0.0.1/api/login) answers 200 (got ${code:-nothing})"; fi
+code=$(http_code https://127.0.0.1/)
+if [ "$code" = 200 ]; then hc_pass "web UI via nginx answers 200"; else hc_fail "web UI via nginx answers 200 (got ${code:-nothing}; is $WEBROOT/index.html there?)"; fi
+
+# Migrations: the database's alembic version(s) must be exactly the code's
+# head(s). The app upgrades on every start, so anything else means that
+# upgrade failed (its traceback is in raven.log).
+DB_REVS=$(run_as_pg "psql -d $DB_NAME -XtAc 'SELECT version_num FROM alembic_version'" 2>/dev/null || true)
+CODE_HEADS=$(ih_heads_py | run_as_app "cd '$APP_HOME/c4raven-server' && .venv/bin/python -" 2>/dev/null || true)
+if [ -z "$CODE_HEADS" ]; then
+  hc_warn "could not read the code's migration heads; database is at: ${DB_REVS:-nothing}"
+elif ih_heads_match "$DB_REVS" "$CODE_HEADS"; then
+  hc_pass "database migrations at head ($(echo $CODE_HEADS))"
+else
+  hc_fail "database migrations at head (database: $(echo ${DB_REVS:-none}), code: $(echo $CODE_HEADS); the upgrade's error is in $DATA_DIR/logs/raven.log)"
+fi
+
+if [ "$SEEDED" = 0 ] || [ "$SEEDED" = 3 ]; then hc_pass "administrator account checked"; else hc_fail "administrator account checked (seed_admin.py exit $SEEDED)"; fi
 
 echo
+if [ "${#HC_FAILED[@]}" -gt 0 ]; then
+  CURRENT_STEP="the final health check (${#HC_FAILED[@]} check(s) failed: ${HC_FAILED[*]})"
+  echo "${RED}The install ran to the end, but ${#HC_FAILED[@]} health check(s) failed (above).${NC}"
+  exit 1
+fi
+
 echo "${GREEN}Setup complete.${NC}"
 if [ -n "$DOMAIN" ]; then
   echo "${GREEN}Web UI: https://${DOMAIN}${NC}"

@@ -406,7 +406,9 @@ t_has "$log" "Dpkg::Options::=--force-confdef" "debian pkg_install takes dpkg's 
 t_true "every apt call goes through apt_noninteractive (stdin from /dev/null)" -- \
   bash -c "! grep -nE '(^|[^_[:alnum:]])apt (install|update|upgrade)' '$REPO_DIR/lib/distro.sh' '$REPO_DIR/install.sh' | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' | grep -q ."
 t_true "apt_noninteractive reads stdin from /dev/null" -- \
-  grep -q 'force-confold </dev/null' "$REPO_DIR/lib/distro.sh"
+  grep -qE '(force-confold|Lock::Timeout=[0-9]+) </dev/null' "$REPO_DIR/lib/distro.sh"
+t_has "$log" "DPkg::Lock::Timeout=" "debian pkg_install waits for the dpkg lock (unattended-upgrades on a fresh VM) instead of failing"
+t_has "$log" "Acquire::Retries=" "debian pkg_install retries dropped mirror downloads"
 
 sandbox_log_reset
 probe rocky-9 x86_64 'pkg_install nginx openssl' >/dev/null

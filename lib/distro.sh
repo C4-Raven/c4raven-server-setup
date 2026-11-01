@@ -208,10 +208,14 @@ distro_supported() {
 # for dpkg's "configuration file modified, keep or replace?" (keep the admin's
 # copy). And stdin from /dev/null: under `curl ... | bash` stdin IS the rest
 # of this script, and anything that does read it would swallow the installer.
+# Acquire::Retries re-fetches a file a mirror dropped; DPkg::Lock::Timeout
+# waits (up to 10 min) for the dpkg lock instead of failing at once -- on a
+# freshly booted cloud image unattended-upgrades nearly always holds it.
 # The -o options go last -- apt accepts options anywhere on its command line.
 apt_noninteractive() {
   _sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt "$@" \
-    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold </dev/null
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+    -o Acquire::Retries=5 -o DPkg::Lock::Timeout=600 </dev/null
 }
 
 pkg_refresh() {
@@ -598,7 +602,11 @@ setup_extra_repos() {
   # is NOT in an EL9 minimal install. Without it both --set-enabled calls
   # below fail, the `|| true` swallows it, CRB stays disabled and the -devel
   # packages that only live there fail much later with an unrelated message.
-  _sudo dnf -y install dnf-plugins-core epel-release
+  #
+  # `|| return 1` (and the && chains in node_install): install.sh runs these
+  # under ih_retry, where `set -e` is suspended, so each step has to hand its
+  # own failure back or a retry would never be attempted.
+  _sudo dnf -y install dnf-plugins-core epel-release || return 1
   _sudo dnf config-manager --set-enabled crb 2>/dev/null \
     || _sudo dnf config-manager --set-enabled powertools 2>/dev/null \
     || echo "distro.sh: could not enable the CRB/PowerTools repo -- some" \
@@ -711,12 +719,12 @@ node_install() {
       # `dnf install nodejs` picks AppStream's 18 and ignores the NodeSource
       # repo entirely -- and 18 has no corepack and cannot build vite 8.
       _sudo dnf -y module reset nodejs 2>/dev/null || true
-      curl -fsSL https://rpm.nodesource.com/setup_22.x | _sudo_E bash -
-      _sudo dnf install -y nodejs
+      curl -fsSL https://rpm.nodesource.com/setup_22.x | _sudo_E bash - \
+        && _sudo dnf install -y nodejs
       ;;
     *)
-      curl -fsSL https://deb.nodesource.com/setup_22.x | _sudo_E bash -
-      apt_noninteractive install -y nodejs
+      curl -fsSL https://deb.nodesource.com/setup_22.x | _sudo_E bash - \
+        && apt_noninteractive install -y nodejs
       ;;
   esac
 }
