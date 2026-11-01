@@ -176,10 +176,11 @@ run_verify() {
 }
 
 conf_fingerprint() {
-  # The settings an upgrade must never change.
+  # The settings an upgrade must never change -- hashed, so no secret
+  # (even a throwaway container's) lands in the uploaded logs.
   xsh "python3 -c \"import yaml; c = yaml.safe_load(open('/opt/raven/data/config.yml')); \
 print('|'.join(str(c.get(k)) for k in ('SQLALCHEMY_DATABASE_URI', 'SECRET_KEY', 'SECURITY_PASSWORD_SALT', 'RAVEN_MEDIAMTX_TOKEN', 'OFFLINE_E2E_MARKER')))\" \
-&& sha256sum /opt/raven/data/ca/certs/raven/raven.pem /opt/raven/data/ca/ca.pem 2>/dev/null | cut -d' ' -f1"
+| sha256sum | cut -d' ' -f1 && sha256sum /opt/raven/data/ca/certs/raven/raven.pem /opt/raven/data/ca/ca.pem 2>/dev/null | cut -d' ' -f1"
 }
 
 if [ -n "$OLD" ]; then
