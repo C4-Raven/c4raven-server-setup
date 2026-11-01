@@ -27,7 +27,7 @@ needs 20.19+/22.12+.
 Build the RPM with:
 
 ```
-PKG_VERSION=2.2.3 ./rpm/build-rpm.sh
+PKG_VERSION=2.3.0 ./rpm/build-rpm.sh
 ```
 
 It is `noarch` — like the `.deb`, it compiles nothing at package-build

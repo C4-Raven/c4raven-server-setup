@@ -59,44 +59,88 @@ Three limits that are structural rather than a to-do list:
 
 ## Install
 
+Pick one of four ways in:
+
+| Path | Use it when | Updates with |
+| --- | --- | --- |
+| [`install.sh`](#option-2-installsh) | a box with internet; tracks `main` | `update.sh` or c4raven-updater |
+| [`.deb`](#option-1-deb-package) | Ubuntu with internet; pinned release | a newer `.deb` (or `update.sh`) |
+| [`.rpm`](#option-3-rpm-package-rocky--alma--rhel-9) | Rocky / Alma / RHEL 9 | a newer `.rpm` |
+| [offline bundle](#offline-no-internet-on-the-server) | no internet on the server at all | a newer bundle |
+
+What changed in each release is in [`CHANGELOG.md`](CHANGELOG.md).
+
 ### Offline (no internet on the server)
 
 `build-offline.sh` produces one archive per Ubuntu release and
-architecture, `c4raven-server-offline_<version>_<release>_<arch>.tar`,
-holding the server package and every Ubuntu package it needs. Copy it
-across and run:
+architecture, `c4raven-server-offline_<version>_<release>_<arch>.tar`.
+Pick the one matching the machine, both halves of it: `noble` is Ubuntu
+24.04 and `questing` is 25.10, and the architecture suffix is the dpkg
+name (`amd64`, `arm64`). A bundle only exists for an architecture
+somebody built it for — see [Supported platforms](#supported-platforms).
 
-```
-tar -xf c4raven-server-offline_*_noble_amd64.tar
-cd c4raven-server-offline_*_noble_amd64
-sudo ./install.sh
-```
+**What's inside.** One top-level directory with:
 
-Pick the archive matching the machine, both halves of it: `noble` is
-Ubuntu 24.04 and `questing` is 25.10, and the architecture suffix is the
-dpkg name (`amd64`, `arm64`). A bundle only exists for an architecture
-somebody built it on — see
-[Supported platforms](#supported-platforms). `install.sh` checks the archive's checksums, then
-installs through apt with the bundled repository as the only source, so it
-never reaches for a mirror and never downgrades anything already
-installed. Leave the domain prompt blank: without internet there's no
-Let's Encrypt, and the server's own CA is used instead.
+- `repo/` — a local apt repository: `c4raven-server_<version>_<arch>.deb`
+  plus every Ubuntu package it needs (PostgreSQL, PostGIS, RabbitMQ,
+  nginx, ffmpeg, ...), resolved from an empty system so nothing is
+  assumed to be installed already.
+- `install.sh` — installs from `repo/` only.
+- `MANIFEST` — target architecture, build time, and the exact backend and
+  UI commits, mediamtx version, plugin file and its SHA-256, and Python
+  versions inside.
+- `SHA256SUMS` — a checksum for every other file in the directory.
+- `README.txt` — these instructions, for whoever carries the disk.
 
-Everything comes from inside the package, pinned at build time: the
-backend and all its Python dependencies (prebuilt wheels), the built web
+The server `.deb` holds the whole application, pinned at build time: the
+backend and all its Python dependencies as prebuilt wheels, the built web
 UI, mediamtx, and the tak.gov-signed CROW Remote Clear ATAK plugin. The
 plugin is published into the server's plugin repository on install, set to
 install on enrollment, so devices get it with no upload through the web
 UI. A newer APK uploaded later is never downgraded by a package upgrade.
 
-To upgrade, run `install.sh` from a newer archive. `update.sh` does not
-apply to offline installs (there's no source checkout to pull).
+**Verifying it.** `install.sh` runs `sha256sum -c SHA256SUMS` itself and
+stops before touching the system if anything is missing or altered. To
+check by hand before carrying it across, or to see what you are about to
+install:
+
+```
+tar -xf c4raven-server-offline_2.3.0_noble_amd64.tar
+cd c4raven-server-offline_2.3.0_noble_amd64
+sha256sum -c SHA256SUMS
+cat MANIFEST
+```
+
+The archive itself carries no outer signature. If you carry it across
+by hand, take `sha256sum c4raven-server-offline_*.tar` on the build
+machine and compare it on the server before extracting.
+
+**Installing with no internet.** Copy the archive across (USB disk,
+`scp` on the local network), then on the server:
+
+```
+tar -xf c4raven-server-offline_2.3.0_noble_amd64.tar
+cd c4raven-server-offline_2.3.0_noble_amd64
+sudo ./install.sh
+```
+
+`install.sh` refuses to run on the wrong Ubuntu release or architecture.
+It then installs through apt with the bundled repository as the only
+source for that run, so it never reaches for a mirror and never
+downgrades anything already installed. Leave the domain prompt blank and
+answer "no" to Turnstile: without internet there is no Let's Encrypt or
+Cloudflare, and the server's own CA is used instead.
+
+To upgrade, run `install.sh` from a newer bundle; config, certificates,
+database and uploads are kept. There is no source checkout to pull, so
+this repo's `update.sh` refuses an offline install, and c4raven-updater
+applies only its `config.yml` and nginx fixes to one, not new code.
 
 Building it (on a machine with internet and read access to the C4-Raven
 repos, which are private):
 
 ```
-PKG_VERSION=2.2.0 ./build-offline.sh
+PKG_VERSION=2.3.0 ./build-offline.sh
 ```
 
 It builds for the machine it runs on. To get an arm64 bundle, run the
@@ -190,6 +234,9 @@ never asked; set one to empty to answer "no":
 | `RAVEN_TURNSTILE_SITE_KEY`, `RAVEN_TURNSTILE_SECRET_KEY` | the Turnstile keys (asked for if Turnstile is on and they are unset) |
 | `RAVEN_DOMAIN` | the public domain; empty for none |
 | `RAVEN_FEDHUB_DEB` | path to a `takserver-fed-hub_*.deb`; empty to skip Federation Hub |
+| `RAVEN_DB_PASSWORD` | the existing `raven` PostgreSQL password, on a re-run that can't find it in `config.yml` or the secrets file |
+| `RAVEN_SKIP_SYSTEMD_CHECK` | `1` skips the systemd-as-PID-1 check (see [Running in Docker](#running-in-docker)) |
+| `REPO_RAW` | where to fetch the templates and helpers from; `file:///path/to/c4raven-server-setup` uses a local checkout |
 
 ```
 curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/install.sh \
@@ -219,7 +266,7 @@ sudo dnf install ./c4raven-server-*.el9.*.rpm
 
 That enables EPEL 9 and CRB, adds the RabbitMQ repository, and switches
 the `nodejs` module stream to 22 (EL9's default is 18, which cannot
-build the UI). Build the RPM itself with `PKG_VERSION=2.2.3
+build the UI). Build the RPM itself with `PKG_VERSION=2.3.0
 ./rpm/build-rpm.sh`; it is `noarch` like the `.deb`, builds nothing at
 package-build time, and does the whole setup on the target machine from
 `/usr/libexec/c4raven-server/configure.sh`.
@@ -249,6 +296,108 @@ capped at 4.3.2. Federation Hub is not available on EL at all.
 At the end, every option makes sure the first administrator account has
 to set a real password on first login (see [`seed_admin.py`](#files)
 below) and prints the URL to log in at.
+
+### If the install fails the first time
+
+`install.sh` stops at the first step that fails, prints which step it
+was, and says how to resume. Fix the cause it printed (most often a
+network blip, or a machine short of the roughly 2 GB of memory the UI
+build needs) and **run the same command again**. A re-run resumes: it
+keeps the database and its users, the certificate authority and server
+certificate, `config.yml`, `mediamtx.yml`, the source checkouts and the
+secrets file. It reuses the database password from the previous run
+(from `config.yml` or `/opt/raven/.raven-secrets.env`; `RAVEN_DB_PASSWORD`
+supplies it if neither has one) and the domain answer it saved in
+`/opt/raven/.install-answers`. Network steps are retried with backoff
+before they count as a failure.
+
+At the end, `install.sh` checks the services, the database migrations and
+a live API request, prints a PASS/FAIL summary, and exits non-zero if
+anything failed.
+
+If the web UI comes up but nobody can log in, or `raven.service` is
+missing, use the recovery tools in
+[c4raven-updater](https://github.com/C4-Raven/c4raven-updater), as your
+own sudo-capable user:
+
+```
+git clone https://github.com/C4-Raven/c4raven-updater.git
+cd c4raven-updater
+./diagnose-login.sh      # says what is wrong; changes nothing
+./finish-install.sh      # repairs what is missing
+```
+
+`diagnose-login.sh` prints service states, code versions, whether the
+schema is at the latest migration, the login settings (no secrets), each
+account's flags, a scripted login straight to the backend and through
+nginx, the nginx sites and certificates, and recent errors. It tests
+`administrator` / `password` unless you set `LOGIN_USER` and
+`LOGIN_PASS`.
+
+`finish-install.sh` walks the install in order and repairs only what is
+missing or broken: backend, `config.yml`, the PostgreSQL role and
+database, migrations, the CA, mediamtx, the nginx sites, the web UI,
+RabbitMQ, the secrets file, the systemd units, and finally an
+`administrator` login test. It never drops the database and never
+regenerates an existing CA, `config.yml` or nginx site. The updater's
+`update.sh` runs it by itself when it finds an install that never
+finished.
+
+### Running in Docker
+
+The stack is a set of systemd services (PostgreSQL, RabbitMQ, nginx,
+mediamtx and the five Raven units), so the container has to run systemd
+as PID 1. There is no single-process image. Start from an image whose
+`CMD` is `/sbin/init` and give it what systemd needs. The test matrix
+uses these images, in [`tests/images/`](tests/images):
+
+- `Dockerfile.ubuntu-24.04` — `ubuntu:24.04` plus `systemd`, `dbus`,
+  `sudo`, `curl`, `tzdata`; removes `/usr/sbin/policy-rc.d` (otherwise
+  package installs never start their services); masks the udev, getty and
+  kernel-mount units a container cannot run; `STOPSIGNAL SIGRTMIN+3`.
+- `Dockerfile.rocky-9` — `rockylinux:9-ubi-init` with the same masks.
+
+Both add an ordinary sudo-capable user, `tester`, because `install.sh`
+refuses to run as root. Build and start one the way
+[`tests/lib/common.sh`](tests/lib/common.sh) does:
+
+```
+docker build -t c4raven-ubuntu -f tests/images/Dockerfile.ubuntu-24.04 tests/images
+docker run --detach --name raven \
+  --privileged --cgroupns=host \
+  --tmpfs /run --tmpfs /run/lock \
+  --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+  --hostname raven \
+  -p 80:80 -p 443:443 -p 8080:8080 -p 8443:8443 -p 8446:8446 \
+  -p 8087:8087/udp -p 8088:8088 -p 8089:8089 \
+  c4raven-ubuntu
+docker exec -it -u tester raven bash -lc \
+  'curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/install.sh | bash'
+```
+
+All of `--privileged --cgroupns=host --tmpfs /run --tmpfs /run/lock
+--volume /sys/fs/cgroup:/sys/fs/cgroup:rw` are needed. Leaving one out
+does not fail loudly: systemd boots degraded and half the units never
+start, which looks like an install bug. With podman, add
+`--systemd=always`. Inside such a container every install path runs
+unchanged; `tests/run-matrix.sh` installs and verifies each one this way.
+To try an offline install, `docker cp` the bundle in and run it with no
+network.
+
+The `-p` list covers the web UI (80/443), VPN onboarding (8080), the
+EUD ports (8087/udp, 8088 TCP, 8089 SSL), the Marti API (8443) and
+enrollment (8446). For video add 8322 (RTSPS), 1936 (RTMPS), 8554 (RTSP),
+1935 (RTMP), 8189/udp (WebRTC) and 8890/udp (SRT), and 8883 for MQTTS:
+the same list `install.sh` opens in the firewall. Data lives in the
+container, so `docker rm` deletes it: back it up (c4raven-updater's
+`update.sh` writes a backup on each run) or keep the container.
+
+`install.sh`, the `.deb`, the `.rpm` and the offline `install.sh` all
+check for systemd as PID 1 before changing anything, and stop with the
+flags above if it is missing; `RAVEN_SKIP_SYSTEMD_CHECK=1` skips the
+check. c4raven-updater can run as root in a container (which often has no
+other account); without systemd it still updates code, migrations, config
+and nginx files, skips the restarts and lists what to restart yourself.
 
 ### Federation Hub
 
@@ -315,7 +464,10 @@ deploys it to the webroot, then restarts the services (`raven`,
 `federation-hub` if it's running) — you'll be asked for your `sudo`
 password on the terminal as needed. Database migrations happen
 automatically when `raven` restarts — there's no separate migration step
-to run. Never touches your `config.yml` or data — safe to run any time.
+to run. It also adds `proxy_set_header X-Ssl-Cert "";` to the existing
+nginx sites that don't verify client certificates (backing each file up
+first and restoring it if `nginx -t` fails). Never touches your
+`config.yml` or data — safe to run any time.
 
 An RPM install is upgraded the same way the `.deb` is — `sudo dnf
 install ./c4raven-server-<newer>.rpm`, which re-runs `configure.sh` and
@@ -324,10 +476,31 @@ distro-agnostic (it pulls, rebuilds and restarts; nothing in it is
 apt-specific), so it also works on an EL box installed from source, with
 the same caveat that it floats to `main`.
 
-Servers on the older single-user layout (`~/.opentakserver_venv`, `~/ots`,
-`opentakserver.service`) predate this repo; they are updated with
-[c4raven-updater](https://github.com/C4-Raven/c4raven-updater) instead,
-and this `update.sh` will stop with "No existing install found" on them.
+### c4raven-updater
+
+[c4raven-updater](https://github.com/C4-Raven/c4raven-updater) is the
+more careful alternative, and works on servers installed by `install.sh`
+or the online `.deb` (the `raven` layout) as well as on the older
+single-user layout (`~/.opentakserver_venv`, `~/ots`,
+`opentakserver.service`), which this repo's `update.sh` stops on with
+"No existing install found". It picks the layout itself:
+
+```
+git clone https://github.com/C4-Raven/c4raven-updater.git
+cd c4raven-updater
+./update.sh
+```
+
+Before changing anything it writes a timestamped backup under
+`~/backups/` (database dump, data directory, deployed UI, `/etc/nginx`)
+and refuses to run over local changes in either checkout. It then
+fast-forwards both repos, rebuilds, runs and verifies the database
+migrations, applies the current nginx fixes to the existing site files
+(including the `X-Ssl-Cert` hardening, for both `raven_*` and legacy
+`ots_*` names, restoring them if `nginx -t` fails), restarts the services
+and waits for the health check. Its README has the rollback steps. The same repo
+carries `finish-install.sh` and `diagnose-login.sh`; see
+[If the install fails the first time](#if-the-install-fails-the-first-time).
 
 ## Files
 
