@@ -246,7 +246,10 @@ if [ -n "$OFFLINE_PAYLOAD" ]; then
   echo -n "$PKG_VERSION" > "$STAGE/usr/share/c4raven-server/offline/VERSION"
 fi
 
-chmod -R go-w "$STAGE"
+# go-w: nothing in the package is writable by others. a+rX: everything is
+# readable -- postinst reads the offline payload as the app user, and a
+# 0600 file (mktemp's default) staged by root would be unreadable to it.
+chmod -R go-w,a+rX "$STAGE"
 # -Zxz pins the compressor rather than taking dpkg-deb's default, which is
 # zstd on dpkg >= 1.21.18 (noble and newer) -- an offline bundle is carried
 # to air-gapped machines that may run an older dpkg than the build host, and

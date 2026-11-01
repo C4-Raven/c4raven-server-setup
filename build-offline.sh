@@ -295,6 +295,8 @@ vendor_file_reqs() {
     echo "  vendored $whl -> $name==$ver"
   done < "$reqs"
   mv "$out" "$reqs"
+  # mktemp made it 0600; postinst reads it as the app user, not root.
+  chmod 644 "$reqs"
   if grep -q 'file:' "$reqs"; then die "file: requirements survived the vendoring rewrite"; fi
 }
 
