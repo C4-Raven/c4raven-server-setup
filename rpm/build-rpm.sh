@@ -6,7 +6,7 @@
 # setup script, matching install.sh and the .deb).
 #
 # Usage:
-#   PKG_VERSION=2.2.3 ./build-rpm.sh
+#   PKG_VERSION=2.3.0 ./build-rpm.sh
 #
 # SERVER_SHA / UI_SHA (optional): pin the package to specific commits of
 # c4raven-server / c4raven-ui. Defaults to each repo's current main tip at build
@@ -24,10 +24,10 @@
 # deliberately building for a different EL release.
 set -euo pipefail
 
-: "${PKG_VERSION:?Set PKG_VERSION, e.g. PKG_VERSION=2.2.3 ./build-rpm.sh}"
+: "${PKG_VERSION:?Set PKG_VERSION, e.g. PKG_VERSION=2.3.0 ./build-rpm.sh}"
 # RPM forbids '-' in Version (it is the Version-Release separator).
 case "$PKG_VERSION" in
-  *-*) echo "error: PKG_VERSION must not contain '-' (RPM reserves it); use e.g. 2.2.3 or 2.2.3~rc1" >&2; exit 1 ;;
+  *-*) echo "error: PKG_VERSION must not contain '-' (RPM reserves it); use e.g. 2.3.0 or 2.3.0~rc1" >&2; exit 1 ;;
 esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -245,6 +245,10 @@ fi
 if [ -f "$REPO/lib/distro.sh" ]; then
   install -D -m 644 "$REPO/lib/distro.sh" "$STAGE/usr/share/c4raven-server/lib/distro.sh"
 fi
+# Install-time helpers (systemd/container preflight, migration check),
+# shared with install.sh. Required: the maintainer script sources it.
+[ -f "$REPO/lib/installer.sh" ] || { echo "error: lib/installer.sh is missing from this checkout" >&2; exit 1; }
+install -D -m 644 "$REPO/lib/installer.sh" "$STAGE/usr/share/c4raven-server/lib/installer.sh"
 
 printf '%s' "$SERVER_SHA" > "$STAGE/usr/share/c4raven-server/SERVER_SHA"
 printf '%s' "$UI_SHA"     > "$STAGE/usr/share/c4raven-server/UI_SHA"

@@ -209,6 +209,18 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+# Shared install-time helpers (systemd preflight, migration check), the same
+# lib/installer.sh install.sh and the .deb use.
+# shellcheck source=lib/installer.sh
+. "$PKGDATA/lib/installer.sh"
+
+# Everything below creates, enables and starts systemd units; in a container
+# without systemd as PID 1 it would fail halfway. Stop before changing anything.
+if ! ih_require_systemd; then
+  echo "c4raven-server is installed but NOT configured. Once systemd is running: sudo c4raven-setup" >&2
+  exit 1
+fi
+
 if ! command -v "$RAVEN_PYTHON" >/dev/null 2>&1; then
   echo "$RAVEN_PYTHON not found. c4raven-server needs Python 3.10+ and EL9's" >&2
   # Same set the spec's Requires: names, so the hint and the dependency list
@@ -894,18 +906,38 @@ fi
 
 systemctl daemon-reload
 systemctl enable mediamtx raven cot_parser eud_handler eud_handler_ssl
+# raven.log et al. owned by the app user before systemd appends to them (the
+# error-log API reads them as that user).
+ih_own_logs "$DATA_DIR/logs" "$APP_USER"
 systemctl restart mediamtx raven cot_parser eud_handler eud_handler_ssl
 
 # The database schema is created by the migrations the server runs on startup,
 # so wait for it to answer before anything touches the database.
 echo "Waiting for the Raven server to come up..."
-for i in $(seq 1 60); do
+for i in $(seq 1 150); do
   if curl -fsS -o /dev/null http://127.0.0.1:8081/api/health 2>/dev/null; then break; fi
-  if [ "$i" -eq 60 ]; then
-    echo "raven did not answer on 127.0.0.1:8081 after 2 minutes -- check $DATA_DIR/logs/raven.log"
+  if [ "$i" -eq 150 ]; then
+    echo "raven did not answer on 127.0.0.1:8081 after 5 minutes -- check $DATA_DIR/logs/raven.log"
   fi
   sleep 2
 done
+
+# The app runs `flask db upgrade` itself on start. Confirm the database really
+# reached the code's alembic head(s): a failed migration leaves raven
+# restarting forever, which is otherwise easy to miss here.
+DB_REVS=$(psql_super -d "$DB_NAME" -XtAc 'SELECT version_num FROM alembic_version' 2>/dev/null || true)
+CODE_HEADS=$(ih_heads_py | raven_exec "python -" 2>/dev/null || true)
+if [ -z "$CODE_HEADS" ]; then
+  echo "warning: could not read the code's migration heads; database is at: ${DB_REVS:-nothing}" >&2
+elif ih_heads_match "$DB_REVS" "$CODE_HEADS"; then
+  echo "Database migrations are at head ($(echo $CODE_HEADS))."
+else
+  echo "ERROR: the database did not migrate to the current schema." >&2
+  echo "  database: $(echo ${DB_REVS:-none})   code: $(echo $CODE_HEADS)" >&2
+  echo "  The upgrade's error is in $DATA_DIR/logs/raven.log." >&2
+  ih_print_recovery "sudo c4raven-setup"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Federation Hub -- requires a licensed TAK.gov account, so this can't be

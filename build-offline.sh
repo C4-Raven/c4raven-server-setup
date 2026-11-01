@@ -3,7 +3,7 @@
 # internet access at install time.
 #
 # Usage:
-#   PKG_VERSION=2.2.0 ./build-offline.sh
+#   PKG_VERSION=2.3.0 ./build-offline.sh
 #
 # Produces, under build/ (<arch> is TARGET_ARCH, a dpkg architecture name):
 #
@@ -84,7 +84,7 @@
 #                         ports.ubuntu.com)
 set -euo pipefail
 
-: "${PKG_VERSION:?Set PKG_VERSION, e.g. PKG_VERSION=2.2.0 ./build-offline.sh}"
+: "${PKG_VERSION:?Set PKG_VERSION, e.g. PKG_VERSION=2.3.0 ./build-offline.sh}"
 SUITES="${SUITES:-noble questing}"
 PY_VERSIONS="${PY_VERSIONS:-3.12 3.13}"
 

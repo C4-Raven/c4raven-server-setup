@@ -5,7 +5,7 @@
 # is built on the *target* machine by postinst, matching install.sh).
 #
 # Usage:
-#   PKG_VERSION=2.1.2 ./build-deb.sh
+#   PKG_VERSION=2.3.0 ./build-deb.sh
 #
 # SERVER_SHA / UI_SHA (optional): pin the package to specific commits of
 # c4raven-server / c4raven-ui. Defaults to each repo's current main tip
@@ -31,7 +31,7 @@
 # filename, and which mediamtx tarball postinst extracts on the target.
 set -euo pipefail
 
-: "${PKG_VERSION:?Set PKG_VERSION, e.g. PKG_VERSION=2.1.2 ./build-deb.sh}"
+: "${PKG_VERSION:?Set PKG_VERSION, e.g. PKG_VERSION=2.3.0 ./build-deb.sh}"
 SERVER_SHA="${SERVER_SHA:-$(git ls-remote https://github.com/C4-Raven/c4raven-server.git refs/heads/main | cut -f1)}"
 UI_SHA="${UI_SHA:-$(git ls-remote https://github.com/C4-Raven/c4raven-ui.git refs/heads/main | cut -f1)}"
 
@@ -216,6 +216,10 @@ else
   echo "warning: no lib/distro.sh in this checkout -- the .deb will not open" >&2
   echo "         firewall ports, unlike install.sh and the RPM." >&2
 fi
+# Install-time helpers (systemd/container preflight, migration check),
+# shared with install.sh. Required: the maintainer script sources it.
+[ -f "$HERE/lib/installer.sh" ] || { echo "error: lib/installer.sh is missing from this checkout" >&2; exit 1; }
+install -D -m 644 "$HERE/lib/installer.sh" "$STAGE/usr/share/c4raven-server/lib/installer.sh"
 if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE' "$STAGE/usr/share/c4raven-server/"; then
   echo "error: unsubstituted placeholder left in staged data files" >&2
   exit 1
