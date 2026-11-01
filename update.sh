@@ -62,8 +62,8 @@ if sudo test -d "$APP_HOME/c4raven-ui"; then
   # understand its lockfile and will silently downgrade/corrupt it if used
   # here instead. `corepack yarn` runs the pinned version directly without
   # needing `corepack enable` (which needs root to symlink into /usr/bin).
-  run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn install"
-  run_as_app "cd '$APP_HOME/c4raven-ui' && corepack yarn build"
+  run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn install --immutable"
+  run_as_app "cd '$APP_HOME/c4raven-ui' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn build"
   # Deploy as root, not as $APP_USER: whatever previously owned files are in
   # the webroot might not be deletable by $APP_USER even though the
   # directory itself is world-writable -- confirmed live against a server
@@ -86,6 +86,43 @@ if sudo test -d "$APP_HOME/c4raven-ui"; then
 else
   echo "${YELLOW}No $APP_HOME/c4raven-ui checkout found -- skipping frontend update.${NC}"
 fi
+
+# nginx: blocks that do not verify client certificates must not pass on a
+# client-supplied X-Ssl-Cert header (Raven would take it as a verified cert).
+# Patched in place, since certbot may have edited these files; backed up,
+# checked with nginx -t, and restored if nginx rejects the result.
+NGINX_FILES=()
+for f in raven_http raven_certificate_enrollment raven_certificate_enrollment_domain; do
+  for cand in "/etc/nginx/sites-available/$f" "/etc/nginx/conf.d/$f.conf"; do
+    sudo test -f "$cand" && NGINX_FILES+=("$cand")
+  done
+done
+if [ "${#NGINX_FILES[@]}" -gt 0 ] \
+   && curl -fsSL --retry 5 --retry-delay 3 "$REPO_RAW/lib/nginx_clear_ssl_cert.py" -o "$TMP/nginx_clear_ssl_cert.py" \
+   && grep -q '^def patch' "$TMP/nginx_clear_ssl_cert.py"; then
+  echo "${GREEN}Checking nginx's X-Ssl-Cert handling...${NC}"
+  TS=$(date +%Y%m%d-%H%M%S)
+  for f in "${NGINX_FILES[@]}"; do sudo cp -a "$f" "$f.bak-$TS"; done
+  sudo python3 "$TMP/nginx_clear_ssl_cert.py" "${NGINX_FILES[@]}"
+  if sudo nginx -t >/dev/null 2>&1; then
+    sudo systemctl reload nginx
+    for f in "${NGINX_FILES[@]}"; do
+      if sudo cmp -s "$f" "$f.bak-$TS"; then sudo rm -f "$f.bak-$TS"; fi
+    done
+  else
+    echo "${RED}nginx rejected the X-Ssl-Cert change; restoring the previous files.${NC}"
+    for f in "${NGINX_FILES[@]}"; do sudo cp -a "$f.bak-$TS" "$f"; done
+  fi
+fi
+
+# The services append stdout/stderr to raven.log; systemd (root) creates it
+# if missing, root-owned. The 2.3.0 error-log API reads the logs as the app
+# user, so make sure it owns them.
+sudo install -d -o "$APP_USER" -g "$APP_USER" -m 750 "$APP_HOME/data/logs"
+sudo test -e "$APP_HOME/data/logs/raven.log" \
+  || sudo install -o "$APP_USER" -g "$APP_USER" -m 640 /dev/null "$APP_HOME/data/logs/raven.log"
+sudo find "$APP_HOME/data/logs" -maxdepth 1 -type f -name '*.log*' ! -user "$APP_USER" \
+  -exec chown "$APP_USER:$APP_USER" {} +
 
 echo "${GREEN}Restarting services...${NC}"
 sudo systemctl restart raven cot_parser eud_handler eud_handler_ssl mediamtx
