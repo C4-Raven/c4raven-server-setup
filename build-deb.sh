@@ -174,6 +174,10 @@ cp "$HERE/debian/c4raven-server.templates" "$STAGE/DEBIAN/templates"
 for svc in raven eud_handler eud_handler_ssl cot_parser mediamtx; do
   cp "$HERE/debian/$svc.service" "$STAGE/lib/systemd/system/$svc.service"
 done
+# Reloads nginx when a certificate revocation rewrites ca.crl (ssl_crl)
+for unit in raven-crl-reload.path raven-crl-reload.service; do
+  cp "$HERE/debian/$unit" "$STAGE/lib/systemd/system/$unit"
+done
 if [ -n "$OFFLINE_PAYLOAD" ]; then
   # The offline install has no source checkout: the backend lives in a
   # plain venv (/opt/raven/venv, a symlink postinst swaps on upgrade).
@@ -199,6 +203,7 @@ subst() {
       -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
       -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/raven/raven.nopass.key~g" \
       -e "s~CA_CERT_FILE~$DATA_DIR/ca/ca.pem~g" \
+      -e "s~CA_CRL_FILE~$DATA_DIR/ca/ca.crl~g" \
       "$1" > "$2"
 }
 mkdir -p "$STAGE/usr/share/c4raven-server/nginx_configs"
@@ -228,7 +233,7 @@ install -D -m 644 "$HERE/lib/installer.sh" "$STAGE/usr/share/c4raven-server/lib/
 # overwrite (certbot-modified ones), so an upgrade fixes those too -- with
 # no download, which the offline install could not do.
 install -D -m 644 "$HERE/lib/nginx_clear_ssl_cert.py" "$STAGE/usr/share/c4raven-server/lib/nginx_clear_ssl_cert.py"
-if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE' "$STAGE/usr/share/c4raven-server/"; then
+if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE\|CA_CRL_FILE' "$STAGE/usr/share/c4raven-server/"; then
   echo "error: unsubstituted placeholder left in staged data files" >&2
   exit 1
 fi

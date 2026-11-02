@@ -158,4 +158,9 @@ server {
     # Require client certificate verification to access the Marti API
     ssl_verify_client on;
     ssl_client_certificate CA_CERT_FILE;
+    # Refuse certificates an admin has revoked (Users page). The server
+    # regenerates ca.crl on every revocation and the raven-crl-reload.path
+    # unit reloads nginx when it changes. The server also rejects a revoked
+    # cert itself, so this only closes the gap at the TLS layer.
+    ssl_crl CA_CRL_FILE;
 }

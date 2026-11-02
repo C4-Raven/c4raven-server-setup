@@ -376,9 +376,9 @@ for f in "${NGINX_CONFIGS[@]}"; do [ -r "$f" ] && present+=("$f"); done
 if [ "${#present[@]}" -eq 0 ]; then
   fail "nginx configs have no unsubstituted placeholders" \
        "none of the expected config files exist, so nothing was checked"
-elif grep -qE 'OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE' "${present[@]}"; then
+elif grep -qE 'OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE|CA_CRL_FILE' "${present[@]}"; then
   fail "nginx configs have no unsubstituted placeholders" \
-       "$(grep -lE 'OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE' "${present[@]}" | tr '\n' ' ')"
+       "$(grep -lE 'OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE|CA_CRL_FILE' "${present[@]}" | tr '\n' ' ')"
 else
   pass "nginx configs have no unsubstituted placeholders (${#present[@]} files checked)"
 fi

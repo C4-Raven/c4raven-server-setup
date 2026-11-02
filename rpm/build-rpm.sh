@@ -191,6 +191,10 @@ install -m 755 "$HERE/configure.sh"  "$STAGE/usr/libexec/c4raven-server/configur
 for svc in raven eud_handler eud_handler_ssl cot_parser mediamtx; do
   install -m 644 "$REPO/debian/$svc.service" "$STAGE/usr/lib/systemd/system/$svc.service"
 done
+# Reloads nginx when a certificate revocation rewrites ca.crl (ssl_crl)
+for unit in raven-crl-reload.path raven-crl-reload.service; do
+  install -m 644 "$REPO/debian/$unit" "$STAGE/usr/lib/systemd/system/$unit"
+done
 if [ -n "$OFFLINE_PAYLOAD" ]; then
   # The offline install has no source checkout: the backend lives in a plain
   # venv (/opt/raven/venv, a symlink the setup script swaps on upgrade).
@@ -214,6 +218,7 @@ subst() {
       -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
       -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/raven/raven.nopass.key~g" \
       -e "s~CA_CERT_FILE~$DATA_DIR/ca/ca.pem~g" \
+      -e "s~CA_CRL_FILE~$DATA_DIR/ca/ca.crl~g" \
       "$1" > "$2"
 }
 for f in "$REPO"/nginx_configs/*; do
@@ -228,7 +233,7 @@ install -m 644 "$REPO/rabbitmq.conf" "$REPO/seed_admin.py" "$REPO/seed_plugin.py
 install -m 644 "$HERE/proxy_params" "$STAGE/usr/share/c4raven-server/proxy_params"
 # 10. configure.sh prefers this to lib/distro.sh's nginx_disable_default_site.
 install -m 755 "$HERE/nginx_default_server.py" "$STAGE/usr/share/c4raven-server/nginx_default_server.py"
-if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE' "$STAGE/usr/share/c4raven-server/"; then
+if grep -rq 'OTS_FOLDER\|SERVER_CERT_FILE\|SERVER_KEY_FILE\|CA_CERT_FILE\|CA_CRL_FILE' "$STAGE/usr/share/c4raven-server/"; then
   echo "error: unsubstituted placeholder left in staged data files" >&2
   exit 1
 fi

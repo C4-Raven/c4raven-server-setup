@@ -1,0 +1,11 @@
+[Unit]
+Description=Reload nginx when the Raven CA's CRL changes (a certificate was revoked)
+[Path]
+# The server writes ca.crl with an atomic rename on every revocation and when
+# it refreshes the CRL before it expires. nginx only reads ssl_crl at
+# (re)load, and the server runs unprivileged, so root's systemd does the
+# reload instead of the app needing sudo.
+PathChanged=/opt/raven/data/ca/ca.crl
+Unit=raven-crl-reload.service
+[Install]
+WantedBy=multi-user.target

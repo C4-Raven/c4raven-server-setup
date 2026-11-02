@@ -82,7 +82,7 @@ else
   t_has "$d" "ssl_certificate_key /etc/letsencrypt/live/DOMAIN_NAME/privkey.pem;" \
         "...with the LE private key"
   t_false "it carries none of the build-time placeholders (so build-deb/build-rpm leave it intact)" -- \
-    grep -qE 'OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE' "$DOM"
+    grep -qE 'OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE|CA_CRL_FILE' "$DOM"
   t_eq "$(locations "$DOM")" "$(locations "$BASE")" \
        "it proxies exactly the same locations as the default block"
   # The proxy bodies must match too, not just the location lines: the two
@@ -218,6 +218,7 @@ render() {  # render OUTDIR WITH_DOMAIN(0|1)
     sed -e "s~SERVER_CERT_FILE~$WORK/certs/raven.pem~g" \
         -e "s~SERVER_KEY_FILE~$WORK/certs/raven.key~g" \
         -e "s~CA_CERT_FILE~$WORK/certs/ca.pem~g" \
+        -e "s~CA_CRL_FILE~$WORK/certs/ca.crl~g" \
         "$T/$f" > "$out/sites/$f"
   done
   if [ "$with" = 1 ]; then
@@ -279,6 +280,12 @@ else
   }
   mkcert "raven-internal" "$WORK/certs/raven.pem" "$WORK/certs/raven.key"
   cp "$WORK/certs/raven.pem" "$WORK/certs/ca.pem"
+  # raven_https has ssl_crl, and nginx -t fails if the file is missing
+  : > "$WORK/certs/crl_index.txt"
+  printf '[ca]\ndefault_ca = d\n[d]\ndatabase = %s\ndefault_md = sha256\n' \
+    "$WORK/certs/crl_index.txt" > "$WORK/certs/crl.cfg"
+  openssl ca -config "$WORK/certs/crl.cfg" -gencrl -crldays 2 -keyfile "$WORK/certs/raven.key" \
+    -cert "$WORK/certs/ca.pem" -out "$WORK/certs/ca.crl" >/dev/null 2>&1
   mkcert "$DOMAIN" "$WORK/le/$DOMAIN/fullchain.pem" "$WORK/le/$DOMAIN/privkey.pem"
 
   # nginx -t really binds every listen, so run it as non-root on the same

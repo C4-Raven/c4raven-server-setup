@@ -740,6 +740,9 @@ rm -f "$NGINX_SITES_DIR/raven_certificate_enrollment_domain.conf"
 
 systemctl enable nginx
 systemctl restart nginx
+# nginx re-reads ssl_crl (ca.crl) whenever a certificate is revoked
+systemctl daemon-reload
+systemctl enable --now raven-crl-reload.path
 
 if [ -n "$DOMAIN" ]; then
   echo "Requesting a Let's Encrypt certificate for ${DOMAIN}..."

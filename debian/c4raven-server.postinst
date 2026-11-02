@@ -433,6 +433,9 @@ stream {
 
     systemctl enable nginx
     systemctl restart nginx
+    # nginx re-reads ssl_crl (ca.crl) whenever a certificate is revoked
+    systemctl daemon-reload
+    systemctl enable --now raven-crl-reload.path
 
     # The offline bundle's install.sh sets RAVEN_OFFLINE_INSTALL=1: there is
     # no internet, so asking Let's Encrypt would only fail (or hang on a

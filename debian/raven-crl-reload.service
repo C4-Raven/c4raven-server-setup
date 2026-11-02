@@ -1,0 +1,6 @@
+[Unit]
+Description=Reload nginx to pick up the Raven CA's new CRL
+[Service]
+Type=oneshot
+# Only reload a config that passes: a bad CRL must not take nginx down.
+ExecStart=/bin/sh -c 'nginx -t -q && systemctl reload nginx'

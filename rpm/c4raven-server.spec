@@ -181,6 +181,8 @@ tar -xf %{SOURCE0} -C %{buildroot}
 %{_unitdir}/eud_handler.service
 %{_unitdir}/eud_handler_ssl.service
 %{_unitdir}/mediamtx.service
+%{_unitdir}/raven-crl-reload.path
+%{_unitdir}/raven-crl-reload.service
 %{pkgdata}
 
 %post

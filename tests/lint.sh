@@ -196,7 +196,7 @@ log "Unsubstituted placeholders"
 # These tokens are legitimate only in the shipped templates (nginx_configs/*,
 # mediamtx.yml) and in the scripts that substitute them. Anywhere else means
 # a template got copied without its sed pass.
-PLACEHOLDERS='OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE'
+PLACEHOLDERS='OTS_FOLDER|SERVER_CERT_FILE|SERVER_KEY_FILE|CA_CERT_FILE|CA_CRL_FILE'
 stray=$(grep -rlE "$PLACEHOLDERS" "$REPO_DIR" \
           --exclude-dir=.git --exclude-dir=build --exclude-dir=tests \
           --exclude-dir=docs --exclude-dir=nginx_configs \

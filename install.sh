@@ -611,6 +611,7 @@ for f in "$(nginx_site_file raven_https)" "$(nginx_site_file raven_certificate_e
     -e "s~SERVER_CERT_FILE~$DATA_DIR/ca/certs/raven/raven.pem~g" \
     -e "s~SERVER_KEY_FILE~$DATA_DIR/ca/certs/raven/raven.nopass.key~g" \
     -e "s~CA_CERT_FILE~$DATA_DIR/ca/ca.pem~g" \
+    -e "s~CA_CRL_FILE~$DATA_DIR/ca/ca.crl~g" \
     "$f"
 done
 
@@ -876,8 +877,29 @@ WantedBy=multi-user.target
 EOF
 done
 
+# nginx only reads ssl_crl (ca.crl) at (re)load and the server runs
+# unprivileged, so root's systemd reloads nginx whenever a certificate
+# revocation rewrites the CRL. Same units as debian/raven-crl-reload.*.
+sudo tee /etc/systemd/system/raven-crl-reload.path >/dev/null << EOF
+[Unit]
+Description=Reload nginx when the Raven CA's CRL changes (a certificate was revoked)
+[Path]
+PathChanged=$DATA_DIR/ca/ca.crl
+Unit=raven-crl-reload.service
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo tee /etc/systemd/system/raven-crl-reload.service >/dev/null << 'EOF'
+[Unit]
+Description=Reload nginx to pick up the Raven CA's new CRL
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'nginx -t -q && systemctl reload nginx'
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable mediamtx raven cot_parser eud_handler eud_handler_ssl
+sudo systemctl enable --now raven-crl-reload.path
 ih_own_logs "$DATA_DIR/logs" "$APP_USER"
 # restart, not start: on a re-run they are already running, with whatever
 # config (database password, secrets file, units) the previous run left.
