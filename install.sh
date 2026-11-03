@@ -279,7 +279,7 @@ backend_venv_install() {
   fi
   # Retried: PyPI and files.pythonhosted.org time out often enough on a
   # fresh VM to matter. Re-running resumes; poetry skips what is installed.
-  ih_retry run_as_app "cd '$APP_HOME/c4raven-server' && poetry install"
+  ih_retry run_as_app "cd '$APP_HOME/c4raven-server' && PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring poetry install"
 }
 backend_venv_install
 
