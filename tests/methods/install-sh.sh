@@ -51,13 +51,16 @@ ANSWERS=/tmp/install-sh.answers
 # One answer per [y/n] question, in order. No answer for the "continue
 # anyway?" guard: every matrix distro passes distro_supported, so install.sh
 # never asks; if it ever does, it gets the Turnstile "n", refuses and exits 1
-# -- a clear failure rather than every answer shifted by one. Federation Hub
-# is only offered on the Debian family.
+# -- a clear failure rather than every answer shifted by one.
+#
+# Federation Hub asks no [y/n] here: there is no TAK.gov artifact in CI, and
+# install-fedhub.sh would ask for its path (a free-text prompt this loop
+# does not answer -- script gives it a real tty). RAVEN_FEDHUB_SKIP=1 on the
+# command line below makes install.sh skip the step without cloning
+# c4raven-updater at all; the step's own logic is unit-tested
+# (tests/unit/test-installer.sh, "Federation Hub step").
 echo n >> "$ANSWERS"   # Cloudflare Turnstile
 echo n >> "$ANSWERS"   # public domain (certbot cannot work in here anyway)
-case "$DISTRO" in
-  ubuntu-*) echo n >> "$ANSWERS" ;;   # Federation Hub .deb
-esac
 say "answers fed to install.sh: $(tr '\n' ' ' < "$ANSWERS")"
 
 # --- run it exactly as a human would ---------------------------------------
@@ -86,7 +89,7 @@ IDLE_MAX=$((15 * 60))
 
 say "running install.sh as tester"
 runuser -u tester -- \
-  script -qefc "cd $REPO && bash install.sh" "$TS" < "$FIFO" &
+  script -qefc "cd $REPO && RAVEN_FEDHUB_SKIP=1 bash install.sh" "$TS" < "$FIFO" &
 pid=$!
 
 given=0 last_size=-1 idle=0

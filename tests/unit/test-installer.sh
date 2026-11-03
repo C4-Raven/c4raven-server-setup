@@ -202,8 +202,10 @@ t_true "install.sh ends with a health check that verifies migrations" -- \
   bash -c "grep -q 'ih_heads_match' '$INS' && grep -q 'alembic_version' '$INS'"
 t_true "install.sh's REPO_RAW stays a single ^REPO_RAW= line (tests/methods/install-sh.sh rewrites it)" -- \
   bash -c "[ \$(grep -c '^REPO_RAW=' '$INS') -eq 1 ]"
+# Two: Turnstile and the public domain. Federation Hub's questions are
+# install-fedhub.sh's own, and the matrix skips that step (RAVEN_FEDHUB_SKIP=1).
 t_true "install.sh does not add [y/n] questions the matrix does not answer" -- \
-  bash -c "[ \$(grep -v '^[[:space:]]*#' '$INS' | grep -c 'ask_yn \"') -eq 3 ]"
+  bash -c "[ \$(grep -v '^[[:space:]]*#' '$INS' | grep -c 'ask_yn \"') -eq 2 ]"
 
 for f in "$INS" "$POST" "$CONFSH" "$REPO_DIR/update.sh"; do
   # A key in config.yml overrides the env var of the same name; the server
@@ -261,5 +263,148 @@ if command -v python3 >/dev/null 2>&1 && command -v git >/dev/null 2>&1 \
 else
   t_ok "no python3/git history -- nginx patcher tests skipped"
 fi
+
+# ===========================================================================
+echo "== Federation Hub step (ih_fedhub_step -> c4raven-updater's install-fedhub.sh)"
+# ===========================================================================
+# A local stand-in for c4raven-updater whose install-fedhub.sh records its
+# arguments, the RAVEN_* environment and its stdin, and exits $FH_RC. Nothing
+# here touches the network or the system.
+if command -v git >/dev/null 2>&1; then
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  FH="$TMP/fh"
+  mkdir -p "$FH/updater" "$FH/home" "$FH/out" "$FH/root-tty/dev" "$FH/root-notty"
+  printf '%s\n' '#!/bin/bash' \
+    'printf "%s\n" "$@" > "$FH_OUT/args"' \
+    'env | grep "^RAVEN_" | sort > "$FH_OUT/env"' \
+    'cat > "$FH_OUT/stdin"' \
+    'echo "fake install-fedhub.sh ran"' \
+    'exit "${FH_RC:-0}"' > "$FH/updater/install-fedhub.sh"
+  git -C "$FH/updater" init -q && git -C "$FH/updater" add . && git -C "$FH/updater" commit -q -m init
+  echo "typed-answer" > "$FH/root-tty/dev/tty"
+  export FH_OUT="$FH/out"
+
+  # fh_run [VAR=VAL ...] -- one call in a clean subshell: none of the
+  # caller's RAVEN_FEDHUB_* leak in, HOME has no ~/c4raven-updater, stdin
+  # carries text the step must not consume. Sets FH_GOT (exit), FH_LOG
+  # (output) and FH_REST (what was left of stdin afterwards).
+  fh_run() {
+    local dest="$FH/w/$RANDOM$RANDOM"
+    rm -f "$FH/out/"*
+    FH_LOG=$(printf 'REST-OF-INSTALL-SH\n' | env -u RAVEN_FEDHUB_SKIP -u RAVEN_FEDHUB_DEB -u RAVEN_FEDHUB_ARTIFACT \
+      HOME="$FH/home" UPDATER_REPO="file://$FH/updater" IH_ROOT="$FH/root-notty" IH_RETRY_DELAY=0 "$@" \
+      bash -c '. "$1"; rc=0; ih_fedhub_step raven /opt/raven /opt/raven/data "$2" "$3" || rc=$?; echo "RC=$rc"; echo "LEFT=$(cat)"' \
+      _ "$LIB" "${FH_DOMAIN-tak.example.org}" "$dest" 2>&1)
+    FH_GOT=$(printf '%s\n' "$FH_LOG" | sed -n 's/^RC=//p')
+    FH_REST=$(printf '%s\n' "$FH_LOG" | sed -n 's/^LEFT=//p')
+    FH_DEST="$dest"
+  }
+  fh_args() { tr '\n' ' ' < "$FH/out/args" 2>/dev/null; }
+
+  # --- skipping without asking (unattended / CI) ---
+  fh_run RAVEN_FEDHUB_SKIP=1
+  t_eq "$FH_GOT" 2 "RAVEN_FEDHUB_SKIP=1: skipped (2)"
+  t_false "RAVEN_FEDHUB_SKIP=1: c4raven-updater is not even cloned" -- test -e "$FH_DEST"
+  t_has "$FH_LOG" "install-fedhub.sh --artifact" "a skip prints the add-it-later guide"
+  fh_run RAVEN_FEDHUB_DEB=
+  t_eq "$FH_GOT" 2 "legacy RAVEN_FEDHUB_DEB= (set but empty) still means skip"
+  t_false "RAVEN_FEDHUB_DEB=: nothing is cloned" -- test -e "$FH_DEST"
+  t_false "RAVEN_FEDHUB_DEB=: install-fedhub.sh is not run" -- test -e "$FH/out/args"
+  fh_run RAVEN_FEDHUB_ARTIFACT=
+  t_eq "$FH_GOT" 2 "RAVEN_FEDHUB_ARTIFACT= (set but empty) means skip too"
+  fh_run RAVEN_FEDHUB_DEB= RAVEN_FEDHUB_ARTIFACT=/srv/fh.zip
+  t_eq "$FH_GOT" 0 "an artifact path wins over a legacy empty RAVEN_FEDHUB_DEB"
+
+  # --- the call itself ---
+  fh_run
+  t_eq "$FH_GOT" 0 "install-fedhub.sh exit 0: the step reports installed (0)"
+  t_true "c4raven-updater was cloned into the given directory" -- test -f "$FH_DEST/install-fedhub.sh"
+  t_eq "$(cat "$FH/out/env" 2>/dev/null | tr '\n' ' ')" \
+       "RAVEN_DATA_DIR=/opt/raven/data RAVEN_DOMAIN=tak.example.org RAVEN_HOME=/opt/raven RAVEN_USER=raven " \
+       "it gets RAVEN_USER/RAVEN_HOME/RAVEN_DATA_DIR/RAVEN_DOMAIN from install.sh's layout"
+  t_eq "$(fh_args)" "--host tak.example.org " "with a domain and no artifact: just --host DOMAIN"
+  t_eq "$FH_REST" "REST-OF-INSTALL-SH" "it does not read the inherited stdin (curl | bash: the rest of install.sh)"
+  t_eq "$(cat "$FH/out/stdin")" "" "with no terminal its stdin is /dev/null (it skips non-interactively)"
+  fh_run IH_ROOT="$FH/root-tty"
+  t_eq "$(cat "$FH/out/stdin")" "typed-answer" "with a terminal its stdin is /dev/tty, so it can prompt"
+  FH_DOMAIN="" fh_run
+  t_hasnt "$(fh_args)" "--host" "no domain: no --host"
+  t_true "no domain: RAVEN_DOMAIN is passed empty" -- grep -qx 'RAVEN_DOMAIN=' "$FH/out/env"
+  fh_run RAVEN_FEDHUB_DEB=/srv/takserver-fed-hub_5.5_all.deb
+  t_eq "$(fh_args)" "--artifact /srv/takserver-fed-hub_5.5_all.deb --host tak.example.org " \
+       "legacy RAVEN_FEDHUB_DEB=PATH becomes --artifact PATH"
+  fh_run RAVEN_FEDHUB_ARTIFACT=/srv/fedhub-docker.zip RAVEN_FEDHUB_DEB=/srv/old.deb
+  t_eq "$(fh_args)" "--artifact /srv/fedhub-docker.zip --host tak.example.org " \
+       "RAVEN_FEDHUB_ARTIFACT wins over RAVEN_FEDHUB_DEB"
+
+  # --- its exit codes never fail the install ---
+  fh_run FH_RC=2
+  t_eq "$FH_GOT" 2 "install-fedhub.sh exit 2: skipped (2)"
+  t_has "$FH_LOG" "Federation Hub skipped" "and says so"
+  t_has "$FH_LOG" "git clone https://github.com/C4-Raven/c4raven-updater.git ~/c4raven-updater" "with the add-it-later guide"
+  fh_run FH_RC=1
+  t_eq "$FH_GOT" 1 "install-fedhub.sh exit 1: failed (1)"
+  t_has "$FH_LOG" "Federation Hub setup failed (install-fedhub.sh exit 1)" "and says so"
+  t_has "$FH_LOG" "./finish-install.sh also check for it" "with the guide"
+  fh_run FH_RC=7
+  t_eq "$FH_GOT" 1 "any other non-zero exit is a failure (1)"
+  out=$(env -u RAVEN_FEDHUB_SKIP -u RAVEN_FEDHUB_DEB -u RAVEN_FEDHUB_ARTIFACT HOME="$FH/home" \
+    UPDATER_REPO="file://$FH/updater" IH_ROOT="$FH/root-notty" FH_RC=1 \
+    bash -c 'set -euo pipefail; trap "echo ERR-TRAP" ERR; . "$1"; FEDHUB_RC=0; ih_fedhub_step raven /opt/raven /opt/raven/data d "$2" < /dev/null || FEDHUB_RC=$?; echo "carried on with $FEDHUB_RC"' \
+    _ "$LIB" "$FH/w/sete" 2>&1)
+  t_has "$out" "carried on with 1" "under set -euo pipefail, install.sh's '|| FEDHUB_RC=\$?' call carries on"
+  t_hasnt "$out" "ERR-TRAP" "and does not trip install.sh's ERR trap"
+
+  # --- getting the installer ---
+  fh_run UPDATER_REPO="file://$FH/no-such-repo"
+  t_eq "$FH_GOT" 1 "clone fails and no other copy: failed (1), not fatal"
+  t_has "$FH_LOG" "Could not download c4raven-updater" "says the download failed"
+  t_has "$FH_LOG" "install-fedhub.sh --artifact" "and prints the guide"
+  mkdir -p "$FH/home/c4raven-updater" && cp "$FH/updater/install-fedhub.sh" "$FH/home/c4raven-updater/"
+  fh_run UPDATER_REPO="file://$FH/no-such-repo"
+  t_eq "$FH_GOT" 0 "clone fails (offline): an existing ~/c4raven-updater copy is used instead"
+  rm -rf "$FH/home/c4raven-updater"
+  git clone -q "file://$FH/updater" "$FH/w/existing"
+  rm -f "$FH/w/existing/install-fedhub.sh" && git -C "$FH/w/existing" commit -qam gone
+  git -C "$FH/w/existing" remote set-url origin "file://$FH/no-such-repo"
+  fh_run_existing() {
+    printf '' | env -u RAVEN_FEDHUB_SKIP -u RAVEN_FEDHUB_DEB -u RAVEN_FEDHUB_ARTIFACT HOME="$FH/home" \
+      UPDATER_REPO="file://$FH/no-such-repo" IH_ROOT="$FH/root-notty" \
+      bash -c '. "$1"; rc=0; ih_fedhub_step raven /opt/raven /opt/raven/data "" "$2" || rc=$?; echo "RC=$rc"' _ "$LIB" "$FH/w/existing" 2>&1
+  }
+  out=$(fh_run_existing)
+  t_has "$out" "RC=1" "an existing checkout without install-fedhub.sh (an old updater, diverged): failed, not fatal"
+  t_has "$out" "using it as it is" "says the fast-forward did not happen"
+  git -C "$FH/w/existing" reset -q --hard HEAD~1
+  git -C "$FH/w/existing" remote set-url origin "file://$FH/updater"
+  printf '%s\n' '#!/bin/bash' 'echo "updated installer"; exit 0' > "$FH/updater/install-fedhub.sh"
+  git -C "$FH/updater" commit -qam update
+  out=$(printf '' | env -u RAVEN_FEDHUB_SKIP -u RAVEN_FEDHUB_DEB -u RAVEN_FEDHUB_ARTIFACT HOME="$FH/home" \
+      IH_ROOT="$FH/root-notty" bash -c '. "$1"; ih_fedhub_step raven /opt/raven /opt/raven/data "" "$2"; echo "RC=$?"' _ "$LIB" "$FH/w/existing" 2>&1)
+  t_has "$out" "updated installer" "an existing checkout is fast-forwarded (git pull --ff-only) before use"
+  t_has "$out" "RC=0" "and its result is reported"
+else
+  t_ok "git not installed -- Federation Hub step tests skipped"
+fi
+
+# --- install.sh's side of it (static: install.sh is never run here) ---
+t_true "install.sh calls ih_fedhub_step with the Raven layout and the domain" -- \
+  grep -q '^ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$INSTALLER_DIR/c4raven-updater" || FEDHUB_RC=\$?$' "$INS"
+l_fh=$(line_of "$INS" '^ih_fedhub_step ')
+l_up=$(line_of "$INS" 'api/health 2>/dev/null; then break')
+l_admin=$(line_of "$INS" '^step "Hardening the first administrator account"')
+[ -n "$l_fh" ] && [ -n "$l_up" ] && [ -n "$l_admin" ] && [ "$l_up" -lt "$l_fh" ] && [ "$l_fh" -lt "$l_admin" ] \
+  && t_ok "the Federation Hub step runs after the services are up and before the admin-account step" \
+  || t_no "the Federation Hub step runs after the services are up and before the admin-account step" "up $l_up, fedhub $l_fh, admin $l_admin"
+t_false "install.sh no longer installs MongoDB or the .deb itself" -- \
+  grep -Eq 'mongodb-org|pkg_install "\$FEDHUB|ask_yn "Do you already have a takserver' "$INS"
+t_true "install.sh's health check only warns about Federation Hub" -- \
+  bash -c "grep -q 'hc_warn \"Federation Hub setup failed' '$INS' && ! grep -q 'hc_fail \"Federation Hub' '$INS'"
+t_true "install.sh repeats the add-it-later guide at the end when it was skipped or failed" -- \
+  bash -c "tail -n 15 '$INS' | grep -q 'ih_fedhub_guide'"
+t_true "install.sh keeps RAVEN_FEDHUB_ENABLE's default in .raven-secrets.env" -- \
+  grep -q 'RAVEN_FEDHUB_ENABLE=$(secret_or RAVEN_FEDHUB_ENABLE False)' "$INS"
+t_true "the install-sh matrix method skips Federation Hub (no TAK.gov artifact in CI)" -- \
+  grep -q 'RAVEN_FEDHUB_SKIP=1 bash install.sh' "$REPO_DIR/tests/methods/install-sh.sh"
 
 t_summary

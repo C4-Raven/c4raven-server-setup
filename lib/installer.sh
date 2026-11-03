@@ -18,9 +18,12 @@
 #   ih_heads_match    are the DB's alembic versions exactly the code's heads
 #   ih_heads_py       Python that prints the code's alembic heads
 #   ih_print_recovery the "what now" text shown when an install stops
+#   ih_fedhub_step    fetch c4raven-updater and run its install-fedhub.sh
+#   ih_fedhub_guide   the "add Federation Hub later" commands
 #
 # Like lib/distro.sh, nothing here changes the system when sourced, every
-# function is safe under `set -euo pipefail`, and none of them prompt.
+# function is safe under `set -euo pipefail`, and none of them prompt --
+# except that ih_fedhub_step runs install-fedhub.sh, which may.
 #
 # Paths can be re-rooted with IH_ROOT (the unit tests point it at a fixture
 # tree); leave it unset in real use.
@@ -319,4 +322,153 @@ the updater's recovery tools diagnose and finish a half-done install:
 
 Backend log: /opt/raven/data/logs/raven.log
 EOF
+}
+
+# ---------------------------------------------------------------------------
+# Federation Hub
+# ---------------------------------------------------------------------------
+# The Federation Hub installer itself is c4raven-updater's install-fedhub.sh
+# (deb and Docker modes, MongoDB, certificates, systemd, firewall and the
+# Raven wiring); install.sh only fetches it and runs it. Its contract:
+#
+#   install-fedhub.sh [--artifact PATH] [--host NAME] [--yes] [--check]
+#   env: RAVEN_FEDHUB_ARTIFACT (legacy RAVEN_FEDHUB_DEB), RAVEN_DOMAIN,
+#        RAVEN_USER, RAVEN_HOME, RAVEN_DATA_DIR, RAVEN_FEDHUB_SKIP=1
+#   exit: 0 installed and wired, 2 skipped, anything else a failure
+#
+# Federation Hub is optional and licensed, so nothing here may fail the
+# main install: every function returns its status instead of exiting.
+
+# ih_fedhub_guide -- the "add it later" commands, shown whenever the step is
+# skipped or fails. KEEP IN STEP with README.md's Federation Hub section.
+ih_fedhub_guide() {
+  cat <<'EOF'
+To add Federation Hub later, put the TAK.gov download in ~/Downloads, then:
+
+    git clone https://github.com/C4-Raven/c4raven-updater.git ~/c4raven-updater   # or: cd ~/c4raven-updater && git pull
+    cd ~/c4raven-updater && ./install-fedhub.sh            # finds the file in ~/Downloads, or asks for its path
+    ./install-fedhub.sh --artifact "/path/to/takserver-fed-hub_X_all.deb"   # or the docker .zip
+
+c4raven-updater's ./update.sh and ./finish-install.sh also check for it and
+offer to install it.
+EOF
+}
+
+# ih_fedhub_skip_requested -- 0 if the environment says "no Federation Hub"
+# without asking: RAVEN_FEDHUB_SKIP=1, or the legacy unattended answer
+# RAVEN_FEDHUB_DEB= (set but empty) with no RAVEN_FEDHUB_ARTIFACT, or
+# RAVEN_FEDHUB_ARTIFACT= (set but empty).
+ih_fedhub_skip_requested() {
+  [ "${RAVEN_FEDHUB_SKIP:-}" = 1 ] && return 0
+  if [ -n "${RAVEN_FEDHUB_ARTIFACT+x}" ]; then
+    [ -z "$RAVEN_FEDHUB_ARTIFACT" ]
+    return
+  fi
+  [ -n "${RAVEN_FEDHUB_DEB+x}" ] && [ -z "$RAVEN_FEDHUB_DEB" ]
+}
+
+# _ih_shallow_clone URL DIR -- one clone attempt into DIR.partial, renamed to
+# DIR only once complete (so a dropped connection never leaves a DIR that
+# looks usable). No credential prompt: a failure must fail, not hang.
+_ih_shallow_clone() {
+  rm -rf "$2.partial" &&
+    GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 "$1" "$2.partial" &&
+    mv "$2.partial" "$2"
+}
+
+# ih_updater_checkout DIR -- make DIR an up-to-date c4raven-updater checkout
+# (URL: $UPDATER_REPO, default the GitHub repo). An existing checkout is
+# fast-forwarded if possible and used as it is if not. Returns non-zero only
+# when there is no checkout at all.
+ih_updater_checkout() {
+  local dir="$1" url="${UPDATER_REPO:-https://github.com/C4-Raven/c4raven-updater.git}"
+  if [ -d "$dir/.git" ]; then
+    GIT_TERMINAL_PROMPT=0 git -C "$dir" pull --ff-only --quiet ||
+      echo "Could not update $dir; using it as it is." >&2
+    return 0
+  fi
+  ih_retry -n 3 _ih_shallow_clone "$url" "$dir"
+}
+
+# ih_fedhub_find_script UPDATER_DIR -- prints the install-fedhub.sh to use:
+# the fresh checkout's, else an existing copy ($RAVEN_UPDATER_DIR, then
+# ~/c4raven-updater -- the clone the README's backup guide makes, and what an
+# offline or air-gapped site carries over by hand). Non-zero if none.
+ih_fedhub_find_script() {
+  local d
+  for d in "$1" "${RAVEN_UPDATER_DIR:-}" "${HOME:-}/c4raven-updater"; do
+    [ -n "$d" ] || continue
+    if [ -f "$d/install-fedhub.sh" ]; then
+      printf '%s\n' "$d/install-fedhub.sh"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ih_fedhub_step APP_USER APP_HOME DATA_DIR DOMAIN UPDATER_DIR
+#
+# The whole optional Federation Hub step: honour an unattended skip, fetch
+# c4raven-updater into UPDATER_DIR, run its install-fedhub.sh with the Raven
+# layout in the environment, and say what happened. Run as the installing
+# (sudo-capable) user, after the Raven services are up. Returns 0 installed,
+# 2 skipped, 1 failed (including "could not get the installer"); never exits,
+# and is safe to call as `ih_fedhub_step ... || rc=$?` under set -e.
+#
+# The script prompts (the artifact path, confirmations), so its stdin is the
+# terminal when there is one. Never the inherited stdin: under `curl | bash`
+# that is the rest of install.sh itself, which the child would swallow. No
+# terminal -> /dev/null, and install-fedhub.sh skips non-interactively.
+# IH_ROOT re-roots /dev/tty for the unit tests.
+ih_fedhub_step() {
+  local app_user="$1" app_home="$2" data_dir="$3" domain="$4" updater_dir="$5"
+  local artifact="${RAVEN_FEDHUB_ARTIFACT:-${RAVEN_FEDHUB_DEB:-}}"
+  local tty="${IH_ROOT:-}/dev/tty" script rc=0
+  local -a cmd
+
+  if ih_fedhub_skip_requested; then
+    echo "Federation Hub skipped (RAVEN_FEDHUB_SKIP=1, or RAVEN_FEDHUB_DEB/RAVEN_FEDHUB_ARTIFACT set to empty)."
+    ih_fedhub_guide
+    return 2
+  fi
+
+  echo "Federation Hub is optional and needs a licensed download from TAK.gov,"
+  echo "which this installer cannot fetch for you: takserver-fed-hub_<version>_all.deb"
+  echo "(Debian/Ubuntu) or the Federation Hub Docker release .zip (Ubuntu or"
+  echo "Rocky/RHEL 9). Put either in ~/Downloads and it is picked up; otherwise"
+  echo "you are asked for its path, and Enter skips it."
+
+  if ! ih_updater_checkout "$updater_dir"; then
+    echo "Could not download c4raven-updater (${UPDATER_REPO:-https://github.com/C4-Raven/c4raven-updater.git})." >&2
+  fi
+  if ! script=$(ih_fedhub_find_script "$updater_dir"); then
+    echo "${RED:-}Federation Hub was not installed: c4raven-updater's install-fedhub.sh is not available. The rest of the install is unaffected.${NC:-}"
+    ih_fedhub_guide
+    return 1
+  fi
+
+  cmd=(env "RAVEN_USER=$app_user" "RAVEN_HOME=$app_home" "RAVEN_DATA_DIR=$data_dir"
+       "RAVEN_DOMAIN=$domain" bash "$script")
+  [ -n "$artifact" ] && cmd+=(--artifact "$artifact")
+  [ -n "$domain" ] && cmd+=(--host "$domain")
+
+  if (: < "$tty") 2>/dev/null; then
+    "${cmd[@]}" < "$tty" || rc=$?
+  else
+    "${cmd[@]}" < /dev/null || rc=$?
+  fi
+
+  case "$rc" in
+    0)
+      echo "${GREEN:-}Federation Hub installed and connected to Raven.${NC:-}"
+      return 0 ;;
+    2)
+      echo "Federation Hub skipped."
+      ih_fedhub_guide
+      return 2 ;;
+    *)
+      echo "${RED:-}Federation Hub setup failed (install-fedhub.sh exit $rc). The rest of the install is unaffected; fix the cause shown above and run it again.${NC:-}"
+      ih_fedhub_guide
+      return 1 ;;
+  esac
 }

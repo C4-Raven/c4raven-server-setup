@@ -78,7 +78,8 @@ for _fn in detect_distro distro_supported pkg_refresh pkg_install \
            selinux_fixup nginx_site_file nginx_disable_default_site \
            nginx_enable_site nginx_remove_site \
            ih_retry ih_require_systemd ih_clone_repo ih_uri_password ih_uri_user \
-           ih_env_value ih_heads_match ih_heads_py ih_own_logs ih_print_recovery; do
+           ih_env_value ih_heads_match ih_heads_py ih_own_logs ih_print_recovery \
+           ih_fedhub_step ih_fedhub_guide; do
   command -v "$_fn" >/dev/null 2>&1 || {
     echo "${RED}lib/distro.sh or lib/installer.sh did not load correctly ($_fn is missing) -- aborting before anything on this system is changed.${NC}"
     exit 1
@@ -998,76 +999,22 @@ for i in $(seq 1 150); do
 done
 
 # ---------------------------------------------------------------------------
-# Federation Hub (optional -- requires a licensed TAK.gov account, and
-# still runs as its own `tak` system user, which its .deb creates itself --
-# it's a separate vendored component, not part of the raven-user layout
-# above)
+# Federation Hub (optional -- needs a licensed TAK.gov download). The
+# installer is c4raven-updater's install-fedhub.sh, which handles the .deb
+# and the Docker release, MongoDB, certificates, systemd, the firewall and
+# the Raven wiring; ih_fedhub_step (lib/installer.sh) fetches and runs it.
+# Here, after the Raven services are up, because it wires Federation Hub
+# into them. It never fails the install: 0 installed, 2 skipped, 1 failed,
+# and the admin-account step and health check run either way.
+#
+# Unattended: RAVEN_FEDHUB_ARTIFACT=/path/to/the .deb or Docker .zip (legacy
+# RAVEN_FEDHUB_DEB), or RAVEN_FEDHUB_SKIP=1 / RAVEN_FEDHUB_DEB= (set but
+# empty) to skip it without being asked or cloning anything.
 # ---------------------------------------------------------------------------
+step "Federation Hub (optional)"
+FEDHUB_RC=0
+ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$INSTALLER_DIR/c4raven-updater" || FEDHUB_RC=$?
 echo
-# Debian/Ubuntu only, deliberately. TAK.gov publishes Federation Hub as a
-# .deb and nothing else, and MongoDB's repo below is an Ubuntu apt repo keyed
-# off `lsb_release -cs` -- there is no EL artefact here to port to, so don't
-# pretend there is. Everything else on the server is unaffected.
-FEDHUB_AVAILABLE=false
-if [ "$DISTRO_FAMILY" = debian ]; then
-  FEDHUB_AVAILABLE=true
-  echo "${YELLOW}Federation Hub requires a takserver-fed-hub_*.deb package, which is only${NC}"
-  echo "${YELLOW}available from a licensed TAK.gov account -- this installer can't download${NC}"
-  echo "${YELLOW}it for you.${NC}"
-else
-  echo "${YELLOW}Federation Hub is not available on $DISTRO_NAME: TAK.gov ships it only as a${NC}"
-  echo "${YELLOW}Debian/Ubuntu .deb, and its MongoDB dependency likewise. Skipping it --${NC}"
-  echo "${YELLOW}nothing else in this install is affected.${NC}"
-fi
-# Unattended: RAVEN_FEDHUB_DEB=/path/to/takserver-fed-hub_*.deb, or
-# RAVEN_FEDHUB_DEB= (set but empty) to skip it without being asked.
-FEDHUB_DEB="${RAVEN_FEDHUB_DEB:-}"
-if [ "$FEDHUB_AVAILABLE" = true ] && { [ -n "$FEDHUB_DEB" ] || { [ -z "${RAVEN_FEDHUB_DEB+x}" ] && ask_yn "Do you already have a takserver-fed-hub_*.deb downloaded and ready to install?"; }; }; then
-  [ -n "$FEDHUB_DEB" ] || read -rp "${GREEN}Full path to the .deb file: ${NC}" FEDHUB_DEB < /dev/tty
-  if [ -f "$FEDHUB_DEB" ]; then
-    echo "${GREEN}Installing MongoDB (Federation Hub's policy/mission store)...${NC}"
-    # MongoDB publishes 7.0 for jammy and bookworm but nothing older than 8.0
-    # for noble (24.04), and Debian lives under apt/debian with `main`.
-    MONGO_CODENAME=$(lsb_release -cs)
-    MONGO_VER=7.0
-    [ "$MONGO_CODENAME" = noble ] && MONGO_VER=8.0
-    if [ "$DISTRO_ID" = debian ]; then
-      MONGO_REPO="https://repo.mongodb.org/apt/debian $MONGO_CODENAME/mongodb-org/$MONGO_VER main"
-    else
-      MONGO_REPO="https://repo.mongodb.org/apt/ubuntu $MONGO_CODENAME/mongodb-org/$MONGO_VER multiverse"
-    fi
-    fetch "https://www.mongodb.org/static/pgp/server-$MONGO_VER.asc" | sudo gpg --dearmor --yes -o "/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg"
-    echo "deb [signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VER.gpg] $MONGO_REPO" | \
-      sudo tee "/etc/apt/sources.list.d/mongodb-org-$MONGO_VER.list" > /dev/null
-    ih_retry apt_noninteractive update
-    ih_retry pkg_install mongodb-org
-    sudo systemctl enable --now mongod
-
-    echo "${GREEN}Installing Federation Hub...${NC}"
-    pkg_install "$FEDHUB_DEB"
-
-    run_as_app "$PYTHON_BIN - << 'PYEOF'
-import yaml
-path = '$DATA_DIR/config.yml'
-with open(path) as f:
-    conf = yaml.safe_load(f)
-conf['RAVEN_FEDHUB_ENABLE'] = True
-with open(path, 'w') as f:
-    yaml.safe_dump(conf, f)
-PYEOF"
-    sudo sed -i 's/^RAVEN_FEDHUB_ENABLE=.*/RAVEN_FEDHUB_ENABLE=True/' "$APP_HOME/.raven-secrets.env"
-
-    echo "${GREEN}Federation Hub package installed.${NC}"
-    echo "It still needs its TLS keystore, truststore, and federation policy set"
-    echo "up before it will accept connections -- see /opt/tak/federation-hub/docs"
-    echo "for the official setup guide. Once its cert covers your domain, set"
-    echo "RAVEN_FEDHUB_API_ADDRESS in $DATA_DIR/config.yml to match."
-  else
-    echo "${RED}File not found at $FEDHUB_DEB -- skipping Federation Hub. Re-run this script, or install it manually, once you have the .deb.${NC}"
-  fi
-elif [ "$FEDHUB_AVAILABLE" = true ]; then
-  echo "Skipping Federation Hub. You can install it later by downloading the .deb from your TAK.gov account and running this section manually."
-fi
 
 # ---------------------------------------------------------------------------
 # First admin account. The server creates `administrator`/`password` itself
@@ -1125,6 +1072,12 @@ else
 fi
 
 if [ "$SEEDED" = 0 ] || [ "$SEEDED" = 3 ]; then hc_pass "administrator account checked"; else hc_fail "administrator account checked (seed_admin.py exit $SEEDED)"; fi
+# Federation Hub is optional: a failure is reported, never counted.
+case "$FEDHUB_RC" in
+  0) hc_pass "Federation Hub installed and connected to Raven" ;;
+  2) ;;
+  *) hc_warn "Federation Hub setup failed (above); the Raven server itself is not affected" ;;
+esac
 
 echo
 if [ "${#HC_FAILED[@]}" -gt 0 ]; then
@@ -1144,3 +1097,14 @@ case "$SEEDED" in
   3) echo "${YELLOW}Existing accounts were left untouched -- log in with your usual administrator credentials.${NC}" ;;
   *) echo "${RED}Could not verify the administrator account (seed_admin.py exit $SEEDED). Once raven is running: sudo -u $APP_USER -H bash -lc \"cd $APP_HOME/c4raven-server && $FLASK_ENV poetry run python $APP_HOME/seed_admin.py\"${NC}" ;;
 esac
+# The Federation Hub output is long gone off screen by now; repeat how to
+# add it, since the next step on a server without it is usually exactly that.
+if [ "$FEDHUB_RC" != 0 ]; then
+  echo
+  if [ "$FEDHUB_RC" = 2 ]; then
+    echo "${YELLOW}Federation Hub was skipped.${NC}"
+  else
+    echo "${RED}Federation Hub was not installed (see its step above).${NC}"
+  fi
+  ih_fedhub_guide
+fi
