@@ -943,15 +943,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Federation Hub -- requires a licensed TAK.gov account, so this can't be
-# prompted for or downloaded automatically. (It is also only published as a
-# .deb upstream, which is a second reason it can't be wired in here.)
+# Federation Hub -- requires a licensed TAK.gov download, and its installer
+# (c4raven-updater's install-fedhub.sh) prompts, which an RPM scriptlet must
+# not. Point to it instead. On EL it installs from the Docker release.
 # ---------------------------------------------------------------------------
 echo
-echo "Federation Hub requires a takserver-fed-hub package, only available from"
-echo "a licensed TAK.gov account and only published as a .deb -- this package"
-echo "can't include it. See https://github.com/C4-Raven/federation-hub-setup"
-echo "if you have one and want to install it."
+echo "Federation Hub is optional and needs a licensed TAK.gov download (on"
+echo "Rocky/RHEL, the Federation Hub Docker release .zip), so this package does"
+echo "not install it."
+ih_fedhub_guide
 
 # ---------------------------------------------------------------------------
 # First admin account. The server creates `administrator`/`password` itself on

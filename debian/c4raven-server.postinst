@@ -687,15 +687,15 @@ EOF
     fi
 
     # -------------------------------------------------------------------
-    # Federation Hub -- requires a licensed TAK.gov account, so this can't
-    # be prompted for or downloaded automatically. Point to the manual
-    # follow-up instead of trying to collect a file path via debconf.
+    # Federation Hub -- requires a licensed TAK.gov download, and its
+    # installer (c4raven-updater's install-fedhub.sh) prompts, which a
+    # maintainer script must not. Point to it instead.
     # -------------------------------------------------------------------
     echo
-    echo "Federation Hub requires a takserver-fed-hub_*.deb package, only"
-    echo "available from a licensed TAK.gov account -- this package can't"
-    echo "include it. See https://github.com/C4-Raven/federation-hub-setup"
-    echo "if you have one and want to install it."
+    echo "Federation Hub is optional and needs a licensed TAK.gov download"
+    echo "(the takserver-fed-hub .deb or the Docker release .zip), so this"
+    echo "package does not install it."
+    ih_fedhub_guide
 
     # -------------------------------------------------------------------
     # First admin account. The server creates `administrator`/`password`

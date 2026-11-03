@@ -412,4 +412,9 @@ t_true "the README's backup guide matches ih_fedhub_guide" -- \
 t_true "the README documents RAVEN_FEDHUB_SKIP and RAVEN_FEDHUB_ARTIFACT" -- \
   bash -c "grep -q 'RAVEN_FEDHUB_SKIP' '$REPO_DIR/README.md' && grep -q 'RAVEN_FEDHUB_ARTIFACT' '$REPO_DIR/README.md'"
 
+for f in "$POST" "$CONFSH"; do
+  t_true "$(basename "$f") prints the Federation Hub add-it-later guide (it cannot prompt)" -- \
+    grep -q '^[[:space:]]*ih_fedhub_guide$' "$f"
+done
+
 t_summary
