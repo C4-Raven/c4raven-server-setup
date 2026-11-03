@@ -313,9 +313,16 @@ want_port 8189 "mediamtx WebRTC ICE (udp)"
 want_port 8890 "mediamtx SRT (udp)"
 want_port 5432 "postgresql"
 want_port 5672 "rabbitmq AMQP"
-# Deliberately not asserted: mediamtx's HLS (8888), API (9997) and playback
-# (9996). They are enabled in mediamtx.yml but are not firewalled open and
-# are not part of the contract any client depends on.
+# Deliberately not asserted open: mediamtx's HLS (8888), API (9997) and
+# playback (9996). They are enabled in mediamtx.yml but are not firewalled
+# open and are not part of the contract any client depends on. The admin
+# listeners must not be reachable off-box, though: mediamtx.yml binds them
+# to loopback.
+for p in 9996 9997 9998 9999; do
+  wild=$(ss -lntH 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" && $4 !~ /^(127\.0\.0\.1|\[::1\]):/ {print $4}')
+  if [ -n "$wild" ]; then fail "mediamtx port $p bound to loopback only" "listening on: $wild"
+  else pass "mediamtx port $p bound to loopback only"; fi
+done
 
 # ---------------------------------------------------------------------------
 section "Backend API"
