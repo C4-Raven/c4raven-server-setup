@@ -27,12 +27,12 @@ udpMaxPayloadSize: 1472
 # Enable Prometheus-compatible metrics.
 metrics: no
 # Address of the metrics listener.
-metricsAddress: :9998
+metricsAddress: 127.0.0.1:9998
 
 # Enable pprof-compatible endpoint to monitor performances.
 pprof: no
 # Address of the pprof listener.
-pprofAddress: :9999
+pprofAddress: 127.0.0.1:9999
 
 # Command to run when a client connects to the server.
 # This is terminated with SIGINT when a client disconnects from the server.
@@ -137,8 +137,9 @@ authJWTJWKS:
 
 # Enable controlling the server through the API.
 api: yes
-# Address of the API listener.
-apiAddress: :9997
+# Address of the API listener. Loopback only: Raven reaches it at localhost:9997
+# and nothing else needs it.
+apiAddress: 127.0.0.1:9997
 
 ###############################################
 # Global settings -> Playback server
@@ -146,7 +147,7 @@ apiAddress: :9997
 # Enable downloading recordings from the playback server.
 playback: yes
 # Address of the playback server listener.
-playbackAddress: :9996
+playbackAddress: 127.0.0.1:9996
 
 ###############################################
 # Global settings -> RTSP server
@@ -155,35 +156,35 @@ playbackAddress: :9996
 rtsp: yes
 # List of enabled RTSP transport protocols.
 # UDP is the most performant, but doesn't work when there's a NAT/firewall between
-# server and clients, and doesn't support encryption.
+# server and clients.
 # UDP-multicast allows to save bandwidth when clients are all in the same LAN.
-# TCP is the most versatile, and does support encryption.
+# TCP is the most versatile.
 # The handshake is always performed with TCP.
-protocols: [tcp]
-# Encrypt handshakes and TCP streams with TLS (RTSPS).
+rtspTransports: [tcp]
+# Use secure protocol variants (RTSPS, TLS, SRTP).
 # Available values are "no", "strict", "optional".
-encryption: "no"
+rtspEncryption: "no"
 # Address of the TCP/RTSP listener. This is needed only when encryption is "no" or "optional".
 rtspAddress: :8554
 # Address of the TCP/TLS/RTSPS listener. This is needed only when encryption is "strict" or "optional".
 rtspsAddress: :8322
-# Address of the UDP/RTP listener. This is needed only when "udp" is in protocols.
+# Address of the UDP/RTP listener. This is needed only when "udp" is in rtspTransports.
 rtpAddress: :8000
-# Address of the UDP/RTCP listener. This is needed only when "udp" is in protocols.
+# Address of the UDP/RTCP listener. This is needed only when "udp" is in rtspTransports.
 rtcpAddress: :8001
-# IP range of all UDP-multicast listeners. This is needed only when "multicast" is in protocols.
+# IP range of all UDP-multicast listeners. This is needed only when "multicast" is in rtspTransports.
 multicastIPRange: 224.1.0.0/16
-# Port of all UDP-multicast/RTP listeners. This is needed only when "multicast" is in protocols.
+# Port of all UDP-multicast/RTP listeners. This is needed only when "multicast" is in rtspTransports.
 multicastRTPPort: 8002
-# Port of all UDP-multicast/RTCP listeners. This is needed only when "multicast" is in protocols.
+# Port of all UDP-multicast/RTCP listeners. This is needed only when "multicast" is in rtspTransports.
 multicastRTCPPort: 8003
 # Path to the server key. This is needed only when encryption is "strict" or "optional".
 # This can be generated with:
 # openssl genrsa -out server.key 2048
 # openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-serverKey: SERVER_KEY_FILE
+rtspServerKey: SERVER_KEY_FILE
 # Path to the server certificate. This is needed only when encryption is "strict" or "optional".
-serverCert: SERVER_CERT_FILE
+rtspServerCert: SERVER_CERT_FILE
 # Authentication methods. Available are "basic" and "digest".
 # "digest" doesn't provide any additional security and is available for compatibility only.
 rtspAuthMethods: [basic]
@@ -375,8 +376,8 @@ pathDefaults:
 
   # Record streams to disk.
   record: no
-  # Enable serving recordings with the playback server.
-  playback: yes
+  # Recordings are served by the playback server (global "playback" above);
+  # MediaMTX 1.13 dropped the per-path "playback" switch.
   # Path of recording segments.
   # Extension is added automatically.
   # Available variables are %path (path name), %Y %m %d %H %M %S %f %s (time in strftime format)

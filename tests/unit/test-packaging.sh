@@ -364,4 +364,20 @@ done
 t_hasnt "$(cat "$REPO_DIR/rabbitmq.conf")" "deprecated_features" \
   "the shared rabbitmq.conf stays loadable by RabbitMQ 3.12 (no deprecated_features key)"
 
+# MediaMTX 1.13 renamed the RTSP server keys and dropped the per-path
+# "playback" switch; the old spellings still load but warn on every start.
+# The admin listeners (API, metrics, pprof, playback) are loopback only:
+# Raven reaches the API at localhost:9997 and nothing off-box uses them.
+MTX="$REPO_DIR/mediamtx.yml"
+for k in protocols encryption serverKey serverCert; do
+  t_false "mediamtx.yml has no deprecated '$k' key" -- grep -qE "^$k:" "$MTX"
+done
+t_false "mediamtx.yml has no per-path 'playback' key" -- grep -qE '^ +playback:' "$MTX"
+for k in rtspTransports rtspEncryption rtspServerKey rtspServerCert playback; do
+  t_true "mediamtx.yml sets '$k'" -- grep -qE "^$k:" "$MTX"
+done
+for k in apiAddress metricsAddress pprofAddress playbackAddress; do
+  t_true "mediamtx.yml binds $k to 127.0.0.1" -- grep -qE "^$k: 127\.0\.0\.1:[0-9]+\$" "$MTX"
+done
+
 t_summary

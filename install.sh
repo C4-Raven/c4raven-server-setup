@@ -643,7 +643,7 @@ selinux_fix_certs "$DATA_DIR/ca"
 # in nginx_configs/: 80 + 8080 (raven_http), 443 + 8443 (raven_https), 8446
 # (raven_certificate_enrollment), and the three TLS stream proxies 8322 RTSPS,
 # 1936 RTMPS, 8883 MQTTS. Plus mediamtx.yml's own listeners that nothing
-# proxies: 8554 RTSP and 1935 RTMP ingest (it has encryption "no" /
+# proxies: 8554 RTSP and 1935 RTMP ingest (it has rtspEncryption "no" /
 # rtmpEncryption "no", so it leaves 8322 and 1936 to nginx), 8189/udp WebRTC
 # ICE and 8890/udp SRT. mediamtx's HLS (8888) and WebRTC HTTP (8889) stay
 # shut: nginx only ever reaches those over 127.0.0.1.
