@@ -391,7 +391,9 @@ fi
 
 # --- install.sh's side of it (static: install.sh is never run here) ---
 t_true "install.sh calls ih_fedhub_step with the Raven layout and the domain" -- \
-  grep -q '^ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$INSTALLER_DIR/c4raven-updater" || FEDHUB_RC=\$?$' "$INS"
+  grep -q '^ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$UPDATER_DIR" || FEDHUB_RC=\$?$' "$INS"
+t_true "install.sh keeps the updater in ~/c4raven-updater unless that path is not a checkout" -- \
+  grep -q '^UPDATER_DIR="$HOME/c4raven-updater"$' "$INS"
 l_fh=$(line_of "$INS" '^ih_fedhub_step ')
 l_up=$(line_of "$INS" 'api/health 2>/dev/null; then break')
 l_admin=$(line_of "$INS" '^step "Hardening the first administrator account"')

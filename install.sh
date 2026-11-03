@@ -1013,7 +1013,15 @@ done
 # ---------------------------------------------------------------------------
 step "Federation Hub (optional)"
 FEDHUB_RC=0
-ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$INSTALLER_DIR/c4raven-updater" || FEDHUB_RC=$?
+# Keep the updater in ~/c4raven-updater, where the backup guide and later
+# updates expect it, rather than in this run's temporary directory. Only fall
+# back to the temp dir when that path is taken by something that isn't a
+# checkout.
+UPDATER_DIR="$HOME/c4raven-updater"
+if [ -e "$UPDATER_DIR" ] && [ ! -d "$UPDATER_DIR/.git" ]; then
+  UPDATER_DIR="$INSTALLER_DIR/c4raven-updater"
+fi
+ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$UPDATER_DIR" || FEDHUB_RC=$?
 echo
 
 # ---------------------------------------------------------------------------
