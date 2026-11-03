@@ -540,6 +540,15 @@ stream {
     echo "Configuring RabbitMQ..."
     # Plugins first: RabbitMQ refuses to start on mqtt.*/auth_http.* settings
     # whose plugins aren't enabled yet.
+    # Earlier installers pinned PLUGINS_DIR in rabbitmq-env.conf to
+    # rabbitmq_server-<ver>/plugins, taking <ver> from rabbitmqadmin, which need
+    # not match the broker -- and upgrading rabbitmq-server removes that directory
+    # anyway. rabbitmq-plugins then dies with plugins_dir_does_not_exist and the
+    # broker cannot load its plugins. The package's own wrapper already exports
+    # the right directory when PLUGINS_DIR is unset, so drop the pinned line.
+    if [ -f /etc/rabbitmq/rabbitmq-env.conf ]; then
+      sed -i '\|^PLUGINS_DIR="/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-[^"]*/plugins"$|d' /etc/rabbitmq/rabbitmq-env.conf
+    fi
     rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
     install -m 644 "$PKGDATA/rabbitmq.conf" /etc/rabbitmq/rabbitmq.conf
     # RabbitMQ 4.x (EL always gets it from rabbitmq.com; newer Debian/Ubuntu ship
@@ -556,10 +565,6 @@ stream {
       echo "deprecated_features.permit.transient_nonexcl_queues = true" >> /etc/rabbitmq/rabbitmq.conf
     fi
 
-    RABBITMQ_VERSION=$(rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
-    if [ -n "$RABBITMQ_VERSION" ] && ! grep -q PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf 2>/dev/null; then
-      echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" >> /etc/rabbitmq/rabbitmq-env.conf
-    fi
     systemctl restart rabbitmq-server
 
     # -------------------------------------------------------------------

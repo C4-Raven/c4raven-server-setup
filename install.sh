@@ -775,6 +775,15 @@ step "Configuring RabbitMQ"
 # failed restart used to end the whole install right here -- before the
 # raven services below were ever created, leaving a server nobody can log
 # in to. --offline works whether or not the broker is running.
+# Earlier installers pinned PLUGINS_DIR in rabbitmq-env.conf to
+# rabbitmq_server-<ver>/plugins, taking <ver> from rabbitmqadmin, which need
+# not match the broker -- and upgrading rabbitmq-server removes that directory
+# anyway. rabbitmq-plugins then dies with plugins_dir_does_not_exist and the
+# broker cannot load its plugins. The package's own wrapper already exports
+# the right directory when PLUGINS_DIR is unset, so drop the pinned line.
+if sudo test -f /etc/rabbitmq/rabbitmq-env.conf; then
+  sudo sed -i '\|^PLUGINS_DIR="/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-[^"]*/plugins"$|d' /etc/rabbitmq/rabbitmq-env.conf
+fi
 sudo rabbitmq-plugins enable --offline rabbitmq_mqtt rabbitmq_auth_backend_http
 fetch "$REPO_RAW/rabbitmq.conf" -o "$INSTALLER_DIR/rabbitmq.conf"
 sudo install -D -m 644 "$INSTALLER_DIR/rabbitmq.conf" /etc/rabbitmq/rabbitmq.conf
@@ -795,10 +804,6 @@ if [ "$RABBIT_MAJOR" -ge 4 ]; then
   echo "deprecated_features.permit.transient_nonexcl_queues = true" | sudo tee -a /etc/rabbitmq/rabbitmq.conf > /dev/null
 fi
 
-RABBITMQ_VERSION=$(sudo rabbitmqadmin --version 2>/dev/null | awk '{print $2}' || true)
-if [ -n "$RABBITMQ_VERSION" ] && ! sudo grep -qs PLUGINS_DIR /etc/rabbitmq/rabbitmq-env.conf; then
-  echo "PLUGINS_DIR=\"/usr/lib/rabbitmq/plugins:/usr/lib/rabbitmq/lib/rabbitmq_server-${RABBITMQ_VERSION}/plugins\"" | sudo tee -a /etc/rabbitmq/rabbitmq-env.conf > /dev/null
-fi
 # Debian's package enables the unit at install time; EL's does not, so
 # without this the broker comes back from a reboot dead and every Raven
 # service with it. Harmless to repeat on Debian.
