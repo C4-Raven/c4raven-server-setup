@@ -278,6 +278,7 @@ if command -v git >/dev/null 2>&1; then
     'printf "%s\n" "$@" > "$FH_OUT/args"' \
     'env | grep "^RAVEN_" | sort > "$FH_OUT/env"' \
     'cat > "$FH_OUT/stdin"' \
+    'pwd > "$FH_OUT/pwd"' \
     'echo "fake install-fedhub.sh ran"' \
     'exit "${FH_RC:-0}"' > "$FH/updater/install-fedhub.sh"
   git -C "$FH/updater" init -q && git -C "$FH/updater" add . && git -C "$FH/updater" commit -q -m init
@@ -319,6 +320,7 @@ if command -v git >/dev/null 2>&1; then
   fh_run
   t_eq "$FH_GOT" 0 "install-fedhub.sh exit 0: the step reports installed (0)"
   t_true "c4raven-updater was cloned into the given directory" -- test -f "$FH_DEST/install-fedhub.sh"
+  t_eq "$(cat "$FH/out/pwd" 2>/dev/null)" "$FH_DEST" "it runs from its own checkout (not install.sh's private temp dir)"
   t_eq "$(cat "$FH/out/env" 2>/dev/null | tr '\n' ' ')" \
        "RAVEN_DATA_DIR=/opt/raven/data RAVEN_DOMAIN=tak.example.org RAVEN_HOME=/opt/raven RAVEN_USER=raven " \
        "it gets RAVEN_USER/RAVEN_HOME/RAVEN_DATA_DIR/RAVEN_DOMAIN from install.sh's layout"

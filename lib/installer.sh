@@ -448,14 +448,17 @@ ih_fedhub_step() {
   fi
 
   cmd=(env "RAVEN_USER=$app_user" "RAVEN_HOME=$app_home" "RAVEN_DATA_DIR=$data_dir"
-       "RAVEN_DOMAIN=$domain" bash "$script")
+       "RAVEN_DOMAIN=$domain" bash ./install-fedhub.sh)
   [ -n "$artifact" ] && cmd+=(--artifact "$artifact")
   [ -n "$domain" ] && cmd+=(--host "$domain")
 
+  # From its own checkout: install.sh's cwd is its private 0700 temp
+  # directory, where anything the script runs as another user (sudo -u
+  # raven) could not even start.
   if (: < "$tty") 2>/dev/null; then
-    "${cmd[@]}" < "$tty" || rc=$?
+    (cd "$(dirname "$script")" && "${cmd[@]}") < "$tty" || rc=$?
   else
-    "${cmd[@]}" < /dev/null || rc=$?
+    (cd "$(dirname "$script")" && "${cmd[@]}") < /dev/null || rc=$?
   fi
 
   case "$rc" in
