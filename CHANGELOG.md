@@ -5,6 +5,27 @@ repo, plus the [c4raven-server](https://github.com/C4-Raven/c4raven-server)
 backend and [c4raven-ui](https://github.com/C4-Raven/c4raven-ui) frontend
 they deploy.
 
+## Unreleased
+
+### New
+
+**Installer and packages**
+
+- **`install.sh` installs Federation Hub.** Put the TAK.gov download
+  (`takserver-fed-hub_<version>_all.deb`, or the Docker release `.zip`)
+  in `~/Downloads` before installing. The last step finds it and runs
+  [c4raven-updater](https://github.com/C4-Raven/c4raven-updater)'s
+  `install-fedhub.sh`, which sets up MongoDB, certificates, config, the
+  systemd service and firewall, and connects Raven to it. If no file is
+  found, it asks for the path; Enter skips it. The Docker release also
+  works on Rocky/RHEL 9, where Federation Hub was not available before.
+- Federation Hub never fails the install. If it is skipped or fails, the
+  install finishes and prints how to add it later (README, "If the
+  Federation Hub step failed or was skipped").
+- `RAVEN_FEDHUB_ARTIFACT` replaces `RAVEN_FEDHUB_DEB`, which still works.
+  `RAVEN_FEDHUB_SKIP=1` or `RAVEN_FEDHUB_DEB=` (empty) skips Federation
+  Hub on unattended installs.
+
 ## 2.3.0
 
 ### New

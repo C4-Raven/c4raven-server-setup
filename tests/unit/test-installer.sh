@@ -407,4 +407,9 @@ t_true "install.sh keeps RAVEN_FEDHUB_ENABLE's default in .raven-secrets.env" --
 t_true "the install-sh matrix method skips Federation Hub (no TAK.gov artifact in CI)" -- \
   grep -q 'RAVEN_FEDHUB_SKIP=1 bash install.sh' "$REPO_DIR/tests/methods/install-sh.sh"
 
+t_true "the README's backup guide matches ih_fedhub_guide" -- \
+  bash -c "grep -qF './install-fedhub.sh --artifact \"/path/to/takserver-fed-hub_X_all.deb\"' '$REPO_DIR/README.md'"
+t_true "the README documents RAVEN_FEDHUB_SKIP and RAVEN_FEDHUB_ARTIFACT" -- \
+  bash -c "grep -q 'RAVEN_FEDHUB_SKIP' '$REPO_DIR/README.md' && grep -q 'RAVEN_FEDHUB_ARTIFACT' '$REPO_DIR/README.md'"
+
 t_summary

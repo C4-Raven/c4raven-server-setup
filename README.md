@@ -53,9 +53,9 @@ Three limits that are structural rather than a to-do list:
   on Rocky. `rpm/build-rpm.sh` refuses it. Nothing stages an EL9 offline
   payload today, which is why those cells read "not available" rather
   than "untested".
-- **Federation Hub is Debian-only.** It ships as a `.deb` from TAK.gov
-  with an Ubuntu MongoDB repo behind it; there is no EL port and the RPM
-  does not pretend otherwise.
+- **Federation Hub needs a TAK.gov download.** On Ubuntu/Debian either
+  the `.deb` or the Docker release works; on Rocky/RHEL 9 only the Docker
+  release does. See [Federation Hub](#federation-hub).
 
 ## Install
 
@@ -244,7 +244,8 @@ services. It interactively asks whether to enable Cloudflare Turnstile
 (the login-page bot check — you'll need a site key and secret key from your
 Cloudflare dashboard's Turnstile section) and whether to configure a public
 domain (gets you a real Let's Encrypt certificate instead of a self-signed
-one), and whether you have a Federation Hub `.deb` to install. Run as
+one). At the end it installs Federation Hub if you have its TAK.gov
+download (see [Federation Hub](#federation-hub)). Run as
 your own sudo-capable user, not root and not `raven` — it uses `sudo`
 itself where needed and prompts for your password on the terminal even
 when piped into `bash`. Update later with `update.sh`, which always pulls
@@ -259,14 +260,16 @@ never asked; set one to empty to answer "no":
 | `RAVEN_TURNSTILE_ENABLE` | Turnstile on (`true`/`yes`/`1`) or off (anything else) |
 | `RAVEN_TURNSTILE_SITE_KEY`, `RAVEN_TURNSTILE_SECRET_KEY` | the Turnstile keys (asked for if Turnstile is on and they are unset) |
 | `RAVEN_DOMAIN` | the public domain; empty for none |
-| `RAVEN_FEDHUB_DEB` | path to a `takserver-fed-hub_*.deb`; empty to skip Federation Hub |
+| `RAVEN_FEDHUB_ARTIFACT` | path to the Federation Hub `.deb` or Docker `.zip`; empty to skip Federation Hub. Unset: looked for in `~/Downloads` |
+| `RAVEN_FEDHUB_DEB` | older name for `RAVEN_FEDHUB_ARTIFACT`; `RAVEN_FEDHUB_DEB=` (empty) still skips Federation Hub |
+| `RAVEN_FEDHUB_SKIP` | `1` skips Federation Hub without looking for it |
 | `RAVEN_DB_PASSWORD` | the existing `raven` PostgreSQL password, on a re-run that can't find it in `config.yml` or the secrets file |
 | `RAVEN_SKIP_SYSTEMD_CHECK` | `1` skips the systemd-as-PID-1 check (see [Running in Docker](#running-in-docker)) |
 | `REPO_RAW` | where to fetch the templates and helpers from; `file:///path/to/c4raven-server-setup` uses a local checkout |
 
 ```
 curl -fsSL https://raw.githubusercontent.com/C4-Raven/c4raven-server-setup/master/install.sh \
-  | RAVEN_TURNSTILE_ENABLE=false RAVEN_DOMAIN=tak.example.org RAVEN_FEDHUB_DEB= bash
+  | RAVEN_TURNSTILE_ENABLE=false RAVEN_DOMAIN=tak.example.org RAVEN_FEDHUB_SKIP=1 bash
 ```
 
 The names match the `.rpm`'s (below). The installer still needs
@@ -317,7 +320,8 @@ firewalld are on by default, the nginx layout has no
 `sites-available`/`sites-enabled`, PostgreSQL ships uninitialised, the
 venv is built with `python3.12` rather than `python3`, PostGIS and the
 full `ffmpeg` are not packaged for EL9, and on aarch64 RabbitMQ is
-capped at 4.3.2. Federation Hub is not available on EL at all.
+capped at 4.3.2. Federation Hub works on EL only from its Docker release
+(see [Federation Hub](#federation-hub)).
 
 At the end, every option makes sure the first administrator account has
 to set a real password on first login (see [`seed_admin.py`](#files)
@@ -427,20 +431,52 @@ and nginx files, skips the restarts and lists what to restart yourself.
 
 ### Federation Hub
 
-Federation Hub is Debian-only, and not by our choice: TAK.gov publishes
-it as a `.deb`, and it wants MongoDB from MongoDB's own Ubuntu
-repository. There is no EL build of either, so the `.rpm` prints a
-pointer and stops — do not expect to add it to a Rocky server later.
+TAK Federation Hub connects this server to other TAK servers. It is
+licensed software, so no installer here can download it for you. Get it
+from your TAK.gov account in either form:
 
-TAK Federation Hub isn't something this script can download for you — the
-`takserver-fed-hub_*.deb` package is only available from a licensed
-TAK.gov account. If you already have it downloaded, `install.sh` will
-install it (along with its MongoDB dependency) and point you at its own
-setup docs (`/opt/tak/federation-hub/docs`) for the remaining TLS
-keystore/policy configuration, which is domain-specific and has to be done
-by hand either way. The `.deb` doesn't prompt for it; see
-[federation-hub-setup](https://github.com/C4-Raven/federation-hub-setup)
-to add it afterwards.
+- **`takserver-fed-hub_<version>_all.deb`** — Ubuntu/Debian only.
+- **the Federation Hub Docker release** (a `.zip` with `fed`, `hub` and
+  `docker` in its name) — Ubuntu/Debian or Rocky/Alma/RHEL 9.
+
+Put the file in `~/Downloads` (a subfolder is fine) of the user who runs
+the installer **before** running `install.sh`. Its last step finds the
+file and installs Federation Hub with
+[c4raven-updater](https://github.com/C4-Raven/c4raven-updater)'s
+`install-fedhub.sh`: MongoDB, its certificates and config,
+the systemd service, the firewall ports, and the Raven side
+(`config.yml`, certificates and `fedhub_bridge.service`). If no file is
+found, it asks for the path. Press Enter to skip, or type `never` to stop
+being asked. Unattended runs use `RAVEN_FEDHUB_ARTIFACT=/path/to/file`, or
+`RAVEN_FEDHUB_SKIP=1` to skip it (see the variables table above).
+
+Federation Hub never fails the main install. If its step fails or is
+skipped, the install carries on, says so at the end, and prints the
+commands below.
+
+#### If the Federation Hub step failed or was skipped
+
+Download the file from TAK.gov into `~/Downloads`, then, as your own
+sudo-capable user (not root, not `raven`):
+
+```
+git clone https://github.com/C4-Raven/c4raven-updater.git ~/c4raven-updater   # or: cd ~/c4raven-updater && git pull
+cd ~/c4raven-updater && ./install-fedhub.sh            # finds the file in ~/Downloads, or asks for its path
+./install-fedhub.sh --artifact "/path/to/takserver-fed-hub_X_all.deb"   # or the docker .zip
+```
+
+It is safe to run again. `./install-fedhub.sh --check` changes nothing; it
+exits 0 when Federation Hub is installed and wired into Raven, 3 when it
+is not installed and 4 when it is installed but Raven is not wired to it.
+c4raven-updater's `./update.sh` and `./finish-install.sh` also check for
+Federation Hub and offer to install it.
+
+The `.deb`, the `.rpm` and the offline bundle do not install Federation
+Hub. They point at these same steps. When `install.sh` cannot download
+c4raven-updater, it uses an existing checkout in `~/c4raven-updater` if
+there is one. On a server with no internet, copy a c4raven-updater
+checkout there along with the TAK.gov file. Its dependencies, such as
+MongoDB, may still need a package mirror.
 
 ## Connecting ATAK, iTAK and WinTAK
 

@@ -99,7 +99,7 @@ is the retry, and it is safe to run as many times as you need.
 | Firewall | ufw installed but inactive | firewalld running, default-deny |
 | PostGIS | `postgresql-postgis` | AppStream `postgis`, a Recommends; extension creation is best-effort |
 | ffmpeg | `ffmpeg` | `ffmpeg-free` from EPEL, and only `Recommends:` |
-| Federation Hub | optional `.deb` | not available |
+| Federation Hub | optional, `.deb` or Docker release | optional, Docker release only |
 
 The things that are identical and worth saying so: `/opt/raven`, the
 `raven` system user, `/opt/raven/data`, `.raven-secrets.env`, the
