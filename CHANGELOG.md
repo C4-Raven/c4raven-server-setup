@@ -25,6 +25,16 @@ they deploy.
 - `RAVEN_FEDHUB_ARTIFACT` replaces `RAVEN_FEDHUB_DEB`, which still works.
   `RAVEN_FEDHUB_SKIP=1` or `RAVEN_FEDHUB_DEB=` (empty) skips Federation
   Hub on unattended installs.
+- Re-running `install.sh` keeps Federation Hub's answers (mode, host,
+  version, "never") in `/opt/raven/.install-answers`, and the hub's host.
+  It only updates its own `RAVEN_DOMAIN` line there.
+- Ctrl-C at a Federation Hub prompt skips that step only. The admin
+  account and the health check still run.
+- c4raven-updater is kept in `~/c4raven-updater` and never discarded. A
+  copy that can't be updated is used with a warning. If it has no
+  `install-fedhub.sh`, the installer prints how to replace it. Fetching it
+  gives up after about two minutes on a server with no internet instead
+  of hanging.
 
 ## 2.3.0
 

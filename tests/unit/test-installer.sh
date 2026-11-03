@@ -134,6 +134,31 @@ t_false "missing key" -- ih_env_value "$TMP/env" NOPE
 t_false "missing file" -- ih_env_value "$TMP/nope" RAVEN_DATA_FOLDER
 
 # ===========================================================================
+echo "== ih_answers_set (install.sh's RAVEN_DOMAIN in .install-answers)"
+# ===========================================================================
+# IH_ROOT set: written as this user, no sudo.
+ANS="$TMP/answers"
+printf '%s\n' 'RAVEN_DOMAIN=old.example.org' 'RAVEN_FEDHUB_MODE=docker' 'RAVEN_FEDHUB_HOST=hub.example.org' \
+  'RAVEN_FEDHUB_VERSION=5.5-RELEASE-1' 'RAVEN_FEDHUB_DECLINED=0' 'RAVEN_DOMAIN=older.example.org' > "$ANS"
+chmod 644 "$ANS"
+IH_ROOT="$TMP" ih_answers_set "$ANS" RAVEN_DOMAIN new.example.org
+t_eq "$(grep -c '^RAVEN_DOMAIN=' "$ANS")" 1 "one RAVEN_DOMAIN line left"
+t_eq "$(ih_env_value "$ANS" RAVEN_DOMAIN)" new.example.org "RAVEN_DOMAIN updated"
+t_eq "$(ih_env_value "$ANS" RAVEN_FEDHUB_MODE)" docker "install-fedhub.sh's RAVEN_FEDHUB_MODE kept"
+t_eq "$(ih_env_value "$ANS" RAVEN_FEDHUB_HOST)" hub.example.org "RAVEN_FEDHUB_HOST kept"
+t_eq "$(ih_env_value "$ANS" RAVEN_FEDHUB_VERSION)" 5.5-RELEASE-1 "RAVEN_FEDHUB_VERSION kept"
+t_eq "$(ih_env_value "$ANS" RAVEN_FEDHUB_DECLINED)" 0 "RAVEN_FEDHUB_DECLINED kept"
+t_eq "$(stat -c %a "$ANS")" 600 "mode 600"
+IH_ROOT="$TMP" ih_answers_set "$ANS" RAVEN_DOMAIN ""
+t_true "an empty domain is remembered as RAVEN_DOMAIN= (no domain)" -- grep -qx 'RAVEN_DOMAIN=' "$ANS"
+t_eq "$(wc -l < "$ANS" | tr -d ' ')" 5 "and nothing else is added or lost"
+rm -f "$TMP/new-answers"
+IH_ROOT="$TMP" ih_answers_set "$TMP/new-answers" RAVEN_DOMAIN d.example.org
+t_eq "$(cat "$TMP/new-answers")" "RAVEN_DOMAIN=d.example.org" "a missing file is created with just the key"
+t_false "a missing directory is an error (install.sh stops, as before)" -- \
+  env IH_ROOT="$TMP" bash -c '. "$1"; ih_answers_set "$2" RAVEN_DOMAIN x 2>/dev/null' _ "$LIB" "$TMP/no-such-dir/answers"
+
+# ===========================================================================
 echo "== ih_heads_match"
 # ===========================================================================
 t_true  "same single head" -- ih_heads_match "d3f1a7c95b20" "d3f1a7c95b20"
@@ -324,7 +349,8 @@ if command -v git >/dev/null 2>&1; then
   t_eq "$(cat "$FH/out/env" 2>/dev/null | tr '\n' ' ')" \
        "RAVEN_DATA_DIR=/opt/raven/data RAVEN_DOMAIN=tak.example.org RAVEN_HOME=/opt/raven RAVEN_USER=raven " \
        "it gets RAVEN_USER/RAVEN_HOME/RAVEN_DATA_DIR/RAVEN_DOMAIN from install.sh's layout"
-  t_eq "$(fh_args)" "--host tak.example.org " "with a domain and no artifact: just --host DOMAIN"
+  t_eq "$(fh_args)" " " "with a domain and no artifact: no arguments (the domain goes in as RAVEN_DOMAIN)"
+  t_hasnt "$(fh_args)" "--host" "never --host: a remembered hub host must win over install.sh's domain"
   t_eq "$FH_REST" "REST-OF-INSTALL-SH" "it does not read the inherited stdin (curl | bash: the rest of install.sh)"
   t_eq "$(cat "$FH/out/stdin")" "" "with no terminal its stdin is /dev/null (it skips non-interactively)"
   fh_run IH_ROOT="$FH/root-tty"
@@ -333,10 +359,10 @@ if command -v git >/dev/null 2>&1; then
   t_hasnt "$(fh_args)" "--host" "no domain: no --host"
   t_true "no domain: RAVEN_DOMAIN is passed empty" -- grep -qx 'RAVEN_DOMAIN=' "$FH/out/env"
   fh_run RAVEN_FEDHUB_DEB=/srv/takserver-fed-hub_5.5_all.deb
-  t_eq "$(fh_args)" "--artifact /srv/takserver-fed-hub_5.5_all.deb --host tak.example.org " \
+  t_eq "$(fh_args)" "--artifact /srv/takserver-fed-hub_5.5_all.deb " \
        "legacy RAVEN_FEDHUB_DEB=PATH becomes --artifact PATH"
   fh_run RAVEN_FEDHUB_ARTIFACT=/srv/fedhub-docker.zip RAVEN_FEDHUB_DEB=/srv/old.deb
-  t_eq "$(fh_args)" "--artifact /srv/fedhub-docker.zip --host tak.example.org " \
+  t_eq "$(fh_args)" "--artifact /srv/fedhub-docker.zip " \
        "RAVEN_FEDHUB_ARTIFACT wins over RAVEN_FEDHUB_DEB"
 
   # --- its exit codes never fail the install ---
@@ -376,7 +402,10 @@ if command -v git >/dev/null 2>&1; then
   }
   out=$(fh_run_existing)
   t_has "$out" "RC=1" "an existing checkout without install-fedhub.sh (an old updater, diverged): failed, not fatal"
-  t_has "$out" "using it as it is" "says the fast-forward did not happen"
+  t_has "$out" "Could not update $FH/w/existing, and the copy there has no install-fedhub.sh" "says the update failed and the copy is unusable"
+  t_has "$out" "mv $FH/w/existing $FH/w/existing.old." "and gives the exact fix (move it aside, nothing deleted)"
+  t_has "$out" "git clone file://$FH/no-such-repo $FH/w/existing" "  ... then re-clone"
+  t_true "the existing checkout is left untouched" -- test -d "$FH/w/existing/.git"
   git -C "$FH/w/existing" reset -q --hard HEAD~1
   git -C "$FH/w/existing" remote set-url origin "file://$FH/updater"
   printf '%s\n' '#!/bin/bash' 'echo "updated installer"; exit 0' > "$FH/updater/install-fedhub.sh"
@@ -385,6 +414,41 @@ if command -v git >/dev/null 2>&1; then
       IH_ROOT="$FH/root-notty" bash -c '. "$1"; ih_fedhub_step raven /opt/raven /opt/raven/data "" "$2"; echo "RC=$?"' _ "$LIB" "$FH/w/existing" 2>&1)
   t_has "$out" "updated installer" "an existing checkout is fast-forwarded (git pull --ff-only) before use"
   t_has "$out" "RC=0" "and its result is reported"
+
+  # A checkout that has install-fedhub.sh but cannot be fast-forwarded (local
+  # commit = diverged) is used, with a visible warning on stdout.
+  printf '%s\n' '#!/bin/bash' 'echo "local installer"; exit 0' > "$FH/w/existing/install-fedhub.sh"
+  git -C "$FH/w/existing" commit -qam local
+  printf '%s\n' '#!/bin/bash' 'echo "newer upstream"; exit 0' > "$FH/updater/install-fedhub.sh"
+  git -C "$FH/updater" commit -qam newer
+  out=$(printf '' | env -u RAVEN_FEDHUB_SKIP -u RAVEN_FEDHUB_DEB -u RAVEN_FEDHUB_ARTIFACT HOME="$FH/home" \
+      IH_ROOT="$FH/root-notty" bash -c '. "$1"; ih_fedhub_step raven /opt/raven /opt/raven/data "" "$2"; echo "RC=$?"' _ "$LIB" "$FH/w/existing" 2>/dev/null)
+  t_has "$out" "WARNING: could not update $FH/w/existing (it is 1 commit(s) behind its remote)" "diverged checkout: a visible warning (stdout) saying how far behind"
+  t_has "$out" "local installer" "  ... and its own install-fedhub.sh is used, local changes kept"
+  t_has "$out" "git pull --ff-only" "  ... with how to update it"
+
+  # Something that is not a git checkout at the target is never cloned over.
+  mkdir -p "$FH/w/plain" && echo keep > "$FH/w/plain/file"
+  out=$(env HOME="$FH/home" UPDATER_REPO="file://$FH/updater" IH_RETRY_DELAY=0 \
+      bash -c '. "$1"; ih_updater_checkout "$2"; echo "RC=$?"' _ "$LIB" "$FH/w/plain" 2>&1)
+  t_has "$out" "RC=1" "a non-checkout directory at the target: not usable (1)"
+  t_eq "$(ls "$FH/w/plain")" "file" "  ... and left exactly as it was"
+
+  # Ctrl-C at install-fedhub.sh's prompt ends only that step. Its own process
+  # group (setsid), so `kill -INT 0` reaches just this test's shells, as a
+  # terminal's Ctrl-C reaches install.sh and its children.
+  if command -v setsid >/dev/null 2>&1; then
+    printf '%s\n' '#!/bin/bash' 'kill -INT 0; sleep 1; exit 130' > "$FH/w/existing/install-fedhub.sh"
+    git -C "$FH/w/existing" commit -qam ctrl-c
+    out=$(printf '' | env -u RAVEN_FEDHUB_SKIP -u RAVEN_FEDHUB_DEB -u RAVEN_FEDHUB_ARTIFACT HOME="$FH/home" \
+        IH_ROOT="$FH/root-notty" setsid bash -c '. "$1"; trap "echo OLD-TRAP" USR1; trap -- "echo ORIG-INT" INT; rc=0; ih_fedhub_step raven /opt/raven /opt/raven/data "" "$2" || rc=$?; echo "RC=$rc"; echo "carried on"; trap -p INT' _ "$LIB" "$FH/w/existing" 2>&1)
+    t_has "$out" "carried on" "Ctrl-C during install-fedhub.sh does not end install.sh"
+    t_has "$out" "RC=2" "  ... the step is reported as skipped (2)"
+    t_has "$out" "interrupted (Ctrl-C)" "  ... and says so"
+    t_has "$out" "ORIG-INT" "  ... and the caller's own INT trap is restored afterwards"
+  else
+    t_ok "setsid not installed -- Ctrl-C test skipped"
+  fi
 else
   t_ok "git not installed -- Federation Hub step tests skipped"
 fi
@@ -394,6 +458,20 @@ t_true "install.sh calls ih_fedhub_step with the Raven layout and the domain" --
   grep -q '^ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$UPDATER_DIR" || FEDHUB_RC=\$?$' "$INS"
 t_true "install.sh keeps the updater in ~/c4raven-updater unless that path is not a checkout" -- \
   grep -q '^UPDATER_DIR="$HOME/c4raven-updater"$' "$INS"
+t_false "install.sh never puts the updater in its temp dir (deleted at exit)" -- \
+  grep -q 'UPDATER_DIR="$INSTALLER_DIR' "$INS"
+t_true "install.sh's fallback is a kept directory beside ~/c4raven-updater" -- \
+  grep -q '^  UPDATER_DIR="$HOME/c4raven-updater.clone"$' "$INS"
+t_true "install.sh updates only RAVEN_DOMAIN in .install-answers (keeps install-fedhub.sh's answers)" -- \
+  grep -q '^ih_answers_set "$ANSWERS_FILE" RAVEN_DOMAIN "$DOMAIN"$' "$INS"
+t_false "install.sh no longer overwrites .install-answers with tee" -- \
+  grep -q 'tee "$ANSWERS_FILE"' "$INS"
+t_true "c4raven-updater is fetched with low-speed and timeout limits" -- \
+  bash -c "grep -q 'http.lowSpeedLimit=1000' '$LIB' && grep -q 'http.lowSpeedTime=20' '$LIB' && grep -q 'timeout \"\\\${IH_GIT_TIMEOUT' '$LIB'"
+t_true "the clone is retried at most twice" -- grep -q 'ih_retry -n 2 _ih_shallow_clone' "$LIB"
+guide=$(ih_fedhub_guide)
+t_has "$guide" "normal sudo-capable user (not" "the guide says to run it as the normal sudo user (scriptlets run as root)"
+t_has "$guide" "No internet on this server" "the guide covers offline servers (copy a checkout over)"
 l_fh=$(line_of "$INS" '^ih_fedhub_step ')
 l_up=$(line_of "$INS" 'api/health 2>/dev/null; then break')
 l_admin=$(line_of "$INS" '^step "Hardening the first administrator account"')

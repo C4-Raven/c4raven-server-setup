@@ -463,8 +463,9 @@ if [ -z "${RAVEN_DOMAIN+x}" ] && sudo test -f "$ANSWERS_FILE" && sudo grep -q '^
 elif [ -z "${RAVEN_DOMAIN+x}" ] && ask_yn "Do you want to configure a public domain name for this server?"; then
   read -rp "${GREEN}Domain (e.g. tak.example.com, must already point at this server's IP): ${NC}" DOMAIN < /dev/tty
 fi
-printf 'RAVEN_DOMAIN=%s\n' "$DOMAIN" | sudo tee "$ANSWERS_FILE" >/dev/null
-sudo chmod 600 "$ANSWERS_FILE"
+# Only the RAVEN_DOMAIN line: the file also holds install-fedhub.sh's
+# RAVEN_FEDHUB_* answers (mode, host, version, "never"), which a re-run must keep.
+ih_answers_set "$ANSWERS_FILE" RAVEN_DOMAIN "$DOMAIN"
 
 # ---------------------------------------------------------------------------
 # Certificate authority
@@ -1014,12 +1015,15 @@ done
 step "Federation Hub (optional)"
 FEDHUB_RC=0
 # Keep the updater in ~/c4raven-updater, where the backup guide and later
-# updates expect it, rather than in this run's temporary directory. Only fall
-# back to the temp dir when that path is taken by something that isn't a
-# checkout.
+# updates expect it, never in this run's temporary directory (deleted at
+# exit). When that path is taken by something that isn't a git checkout --
+# e.g. a copy carried over to an offline server -- leave it alone and clone
+# into ~/c4raven-updater.clone beside it (kept, and pulled on a re-run); if
+# that clone fails, ih_fedhub_step still finds and uses the copy.
 UPDATER_DIR="$HOME/c4raven-updater"
 if [ -e "$UPDATER_DIR" ] && [ ! -d "$UPDATER_DIR/.git" ]; then
-  UPDATER_DIR="$INSTALLER_DIR/c4raven-updater"
+  UPDATER_DIR="$HOME/c4raven-updater.clone"
+  echo "$HOME/c4raven-updater is not a git checkout; leaving it as it is and using $UPDATER_DIR for c4raven-updater."
 fi
 ih_fedhub_step "$APP_USER" "$APP_HOME" "$DATA_DIR" "$DOMAIN" "$UPDATER_DIR" || FEDHUB_RC=$?
 echo

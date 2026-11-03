@@ -18,6 +18,7 @@
 #   ih_heads_match    are the DB's alembic versions exactly the code's heads
 #   ih_heads_py       Python that prints the code's alembic heads
 #   ih_print_recovery the "what now" text shown when an install stops
+#   ih_answers_set    set one KEY=value in $APP_HOME/.install-answers
 #   ih_fedhub_step    fetch c4raven-updater and run its install-fedhub.sh
 #   ih_fedhub_guide   the "add Federation Hub later" commands
 #
@@ -210,6 +211,28 @@ ih_env_value() {
   printf '%s' "$line"
 }
 
+# ih_answers_set FILE KEY VALUE -- set KEY=VALUE in the install-answers file
+# ($APP_HOME/.install-answers), replacing any earlier KEY= lines and keeping
+# every other line: install.sh owns RAVEN_DOMAIN there, c4raven-updater's
+# install-fedhub.sh the RAVEN_FEDHUB_* answers, and neither may wipe the
+# other's. The file ends up mode 600 and root-owned (written with sudo
+# install, as root when already root). Under IH_ROOT (the unit tests) it is
+# written as the current user, without sudo. Returns non-zero when it could
+# not be written (e.g. FILE's directory does not exist).
+ih_answers_set() {
+  local file="$1" key="$2" val="$3" tmp rc=0
+  local -a su=()
+  [ -z "${IH_ROOT:-}" ] && [ "$(id -u)" != 0 ] && su=(sudo)
+  tmp=$(mktemp) || return 1
+  {
+    ${su[@]+"${su[@]}"} cat "$file" 2>/dev/null | grep -v "^${key}=" || true
+    printf '%s=%s\n' "$key" "$val"
+  } > "$tmp"
+  ${su[@]+"${su[@]}"} install -m 600 "$tmp" "$file" || rc=$?
+  rm -f "$tmp"
+  return "$rc"
+}
+
 # ---------------------------------------------------------------------------
 # Git checkouts
 # ---------------------------------------------------------------------------
@@ -343,11 +366,16 @@ EOF
 # skipped or fails. KEEP IN STEP with README.md's Federation Hub section.
 ih_fedhub_guide() {
   cat <<'EOF'
-To add Federation Hub later, put the TAK.gov download in ~/Downloads, then:
+To add Federation Hub later, log in as your normal sudo-capable user (not
+root, not raven), put the TAK.gov download in ~/Downloads, then:
 
     git clone https://github.com/C4-Raven/c4raven-updater.git ~/c4raven-updater   # or: cd ~/c4raven-updater && git pull
     cd ~/c4raven-updater && ./install-fedhub.sh            # finds the file in ~/Downloads, or asks for its path
     ./install-fedhub.sh --artifact "/path/to/takserver-fed-hub_X_all.deb"   # or the docker .zip
+
+No internet on this server (e.g. the offline .deb)? Skip the git clone:
+copy a c4raven-updater checkout from a connected machine into
+~/c4raven-updater, with the TAK.gov file (README.md, "Federation Hub").
 
 c4raven-updater's ./update.sh and ./finish-install.sh also check for it and
 offer to install it.
@@ -367,27 +395,67 @@ ih_fedhub_skip_requested() {
   [ -n "${RAVEN_FEDHUB_DEB+x}" ] && [ -z "$RAVEN_FEDHUB_DEB" ]
 }
 
+# _ih_git ARGS... -- git that gives up instead of hanging on a server with no
+# (or a black-holed) route to GitHub: no credential prompt, abort a transfer
+# slower than 1 KB/s for 20s, and -- where coreutils' timeout exists -- a hard
+# cap of $IH_GIT_TIMEOUT seconds (default 60) on the whole command, which
+# also covers DNS and the TCP connect.
+_ih_git() {
+  local -a cap=()
+  command -v timeout >/dev/null 2>&1 && cap=(timeout "${IH_GIT_TIMEOUT:-60}")
+  GIT_TERMINAL_PROMPT=0 ${cap[@]+"${cap[@]}"} \
+    git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 "$@"
+}
+
 # _ih_shallow_clone URL DIR -- one clone attempt into DIR.partial, renamed to
 # DIR only once complete (so a dropped connection never leaves a DIR that
-# looks usable). No credential prompt: a failure must fail, not hang.
+# looks usable).
 _ih_shallow_clone() {
   rm -rf "$2.partial" &&
-    GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 "$1" "$2.partial" &&
+    _ih_git clone --quiet --depth 1 "$1" "$2.partial" &&
     mv "$2.partial" "$2"
 }
 
 # ih_updater_checkout DIR -- make DIR an up-to-date c4raven-updater checkout
-# (URL: $UPDATER_REPO, default the GitHub repo). An existing checkout is
-# fast-forwarded if possible and used as it is if not. Returns non-zero only
-# when there is no checkout at all.
+# (URL: $UPDATER_REPO, default the GitHub repo). Never discards anything in
+# an existing checkout: it is fast-forwarded if possible, and if not (no
+# network, local changes, diverged, owned by another user) it is used as it
+# is, with a visible warning -- or, when it does not even have
+# install-fedhub.sh, an error naming the fix. Returns 0 when DIR now holds
+# install-fedhub.sh, non-zero otherwise (having said why).
 ih_updater_checkout() {
   local dir="$1" url="${UPDATER_REPO:-https://github.com/C4-Raven/c4raven-updater.git}"
+  local err behind="" aside
   if [ -d "$dir/.git" ]; then
-    GIT_TERMINAL_PROMPT=0 git -C "$dir" pull --ff-only --quiet ||
-      echo "Could not update $dir; using it as it is." >&2
-    return 0
+    if err=$(_ih_git -C "$dir" pull --ff-only --quiet 2>&1); then
+      [ -f "$dir/install-fedhub.sh" ] && return 0
+      echo "${RED:-}$dir is up to date with its remote but has no install-fedhub.sh -- it is not a c4raven-updater checkout (or tracks an old branch).${NC:-}" >&2
+    else
+      # A pull that fetched but could not fast-forward leaves @{u} current.
+      behind=$(git -C "$dir" rev-list --count 'HEAD..@{u}' 2>/dev/null || true)
+      [ "$behind" = 0 ] && behind=""
+      if [ -f "$dir/install-fedhub.sh" ]; then
+        echo "${YELLOW:-}WARNING: could not update $dir${behind:+ (it is $behind commit(s) behind its remote)}; using the copy that is there, which may be out of date.${NC:-}"
+        echo "  git said: $(printf '%s\n' "$err" | sed '/^[[:space:]]*$/d' | tail -n 2 | tr '\n' ' ')"
+        echo "  To update it yourself later: cd $dir && git status && git pull --ff-only"
+        return 0
+      fi
+      echo "${RED:-}Could not update $dir, and the copy there has no install-fedhub.sh (an old or diverged c4raven-updater).${NC:-}" >&2
+      echo "  git said: $(printf '%s\n' "$err" | sed '/^[[:space:]]*$/d' | tail -n 2 | tr '\n' ' ')" >&2
+    fi
+    aside="$dir.old.$(date +%s)"
+    echo "  Fix: move it aside (nothing is deleted) and clone a fresh one, then run install-fedhub.sh:" >&2
+    echo "    mv $dir $aside && git clone $url $dir" >&2
+    return 1
   fi
-  ih_retry -n 3 _ih_shallow_clone "$url" "$dir"
+  if [ -e "$dir" ]; then
+    echo "${RED:-}$dir exists but is not a git checkout; not cloning over it.${NC:-}" >&2
+    return 1
+  fi
+  if ! ih_retry -n 2 _ih_shallow_clone "$url" "$dir"; then
+    echo "Could not download c4raven-updater ($url)." >&2
+    return 1
+  fi
 }
 
 # ih_fedhub_find_script UPDATER_DIR -- prints the install-fedhub.sh to use:
@@ -415,6 +483,15 @@ ih_fedhub_find_script() {
 # 2 skipped, 1 failed (including "could not get the installer"); never exits,
 # and is safe to call as `ih_fedhub_step ... || rc=$?` under set -e.
 #
+# The domain goes in as RAVEN_DOMAIN only, never --host: install-fedhub.sh
+# prefers the host it remembered (RAVEN_FEDHUB_HOST in .install-answers) over
+# RAVEN_DOMAIN and treats --host as "change the hub's host", so a re-run of
+# install.sh never re-certifies a hub that was set up under another name.
+#
+# Ctrl-C while it runs (at one of its prompts, say) ends only this step,
+# reported as skipped (2): install.sh carries on with the admin account and
+# the health check. The caller's INT trap is put back afterwards.
+#
 # The script prompts (the artifact path, confirmations), so its stdin is the
 # terminal when there is one. Never the inherited stdin: under `curl | bash`
 # that is the rest of install.sh itself, which the child would swallow. No
@@ -423,7 +500,7 @@ ih_fedhub_find_script() {
 ih_fedhub_step() {
   local app_user="$1" app_home="$2" data_dir="$3" domain="$4" updater_dir="$5"
   local artifact="${RAVEN_FEDHUB_ARTIFACT:-${RAVEN_FEDHUB_DEB:-}}"
-  local tty="${IH_ROOT:-}/dev/tty" script rc=0
+  local tty="${IH_ROOT:-}/dev/tty" script rc=0 old_int
   local -a cmd
 
   if ih_fedhub_skip_requested; then
@@ -438,9 +515,8 @@ ih_fedhub_step() {
   echo "Rocky/RHEL 9). Put either in ~/Downloads and it is picked up; otherwise"
   echo "you are asked for its path, and Enter skips it."
 
-  if ! ih_updater_checkout "$updater_dir"; then
-    echo "Could not download c4raven-updater (${UPDATER_REPO:-https://github.com/C4-Raven/c4raven-updater.git})." >&2
-  fi
+  # On failure it has said why; an existing copy may still be found below.
+  ih_updater_checkout "$updater_dir" || true
   if ! script=$(ih_fedhub_find_script "$updater_dir"); then
     echo "${RED:-}Federation Hub was not installed: c4raven-updater's install-fedhub.sh is not available. The rest of the install is unaffected.${NC:-}"
     ih_fedhub_guide
@@ -450,8 +526,16 @@ ih_fedhub_step() {
   cmd=(env "RAVEN_USER=$app_user" "RAVEN_HOME=$app_home" "RAVEN_DATA_DIR=$data_dir"
        "RAVEN_DOMAIN=$domain" bash ./install-fedhub.sh)
   [ -n "$artifact" ] && cmd+=(--artifact "$artifact")
-  [ -n "$domain" ] && cmd+=(--host "$domain")
 
+  # Ctrl-C reaches the whole foreground process group. With INT trapped
+  # here, this shell only notes it (once the child has exited) instead of
+  # dying; the subshell below starts with INT back at its default (a
+  # subshell resets trapped signals), so the child is interrupted as usual.
+  # Not `trap '' INT`: an ignored signal is inherited, and Ctrl-C would then
+  # not stop install-fedhub.sh at all.
+  old_int=$(trap -p INT)
+  _IH_FEDHUB_INT=0
+  trap '_IH_FEDHUB_INT=1' INT
   # From its own checkout: install.sh's cwd is its private 0700 temp
   # directory, where anything the script runs as another user (sudo -u
   # raven) could not even start.
@@ -459,6 +543,12 @@ ih_fedhub_step() {
     (cd "$(dirname "$script")" && "${cmd[@]}") < "$tty" || rc=$?
   else
     (cd "$(dirname "$script")" && "${cmd[@]}") < /dev/null || rc=$?
+  fi
+  if [ -n "$old_int" ]; then eval "$old_int"; else trap - INT; fi
+  if [ "$_IH_FEDHUB_INT" = 1 ] || [ "$rc" = 130 ]; then
+    echo
+    echo "${YELLOW:-}Federation Hub step interrupted (Ctrl-C); treating it as skipped. The rest of the install continues.${NC:-}"
+    rc=2
   fi
 
   case "$rc" in

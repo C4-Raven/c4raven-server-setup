@@ -452,7 +452,20 @@ being asked. Unattended runs use `RAVEN_FEDHUB_ARTIFACT=/path/to/file`, or
 
 Federation Hub never fails the main install. If its step fails or is
 skipped, the install carries on, says so at the end, and prints the
-commands below.
+commands below. Ctrl-C at one of its prompts skips just that step; the
+rest of the install still runs.
+
+`install.sh` keeps c4raven-updater in `~/c4raven-updater` and updates it
+with `git pull --ff-only`. It never discards anything there. If the pull
+fails (no network, local changes, a diverged branch), it warns and uses the
+copy as it is, or, if that copy has no `install-fedhub.sh`, prints how to
+move it aside and clone a fresh one. If `~/c4raven-updater` is not a git
+checkout at all, it is left alone and the clone goes to
+`~/c4raven-updater.clone` instead.
+
+Re-running `install.sh` keeps the host name Federation Hub was set up with,
+even if you give a different domain this time. To change the hub's host,
+run `./install-fedhub.sh --host NEW_NAME` from c4raven-updater.
 
 #### If the Federation Hub step failed or was skipped
 
@@ -472,11 +485,14 @@ c4raven-updater's `./update.sh` and `./finish-install.sh` also check for
 Federation Hub and offer to install it.
 
 The `.deb`, the `.rpm` and the offline bundle do not install Federation
-Hub. They point at these same steps. When `install.sh` cannot download
-c4raven-updater, it uses an existing checkout in `~/c4raven-updater` if
-there is one. On a server with no internet, copy a c4raven-updater
-checkout there along with the TAK.gov file. Its dependencies, such as
-MongoDB, may still need a package mirror.
+Hub. They point at these same steps. Their package scripts run as root,
+but run the steps as your normal sudo-capable user. When `install.sh`
+cannot download c4raven-updater, it uses an existing checkout in
+`~/c4raven-updater` if there is one. On a server with no internet
+(including the offline `.deb`), skip the `git clone`: copy a
+c4raven-updater checkout from a connected machine into `~/c4raven-updater`
+along with the TAK.gov file. Its dependencies, such as MongoDB, may still
+need a package mirror.
 
 ## Connecting ATAK, iTAK and WinTAK
 
