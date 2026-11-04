@@ -81,10 +81,11 @@ Never set both sides to dial. The hub then sees two connections from the
 same partner, drops one as a duplicate, and the link keeps dropping. The
 partner card warns about this ("Both servers are dialling each other").
 
-Agree with the other admin who dials **before** either of you presses
-Connect. The guide starts on **We connect to them** for a Raven or a hub,
-and on **They connect to us** for a TAK Server. Change it if you agreed
-otherwise.
+Agree with the other admin who dials **before** either of you reaches
+this step. The guide does not pick for you: **Who connects** starts with
+nothing selected, and you can't continue until you choose. Each admin
+then picks the matching option: the side that dials chooses **We connect
+to them**, the side that waits chooses **They connect to us**.
 
 ### The instructions follow your choice
 
@@ -143,8 +144,8 @@ if Raven 2 is the one that can reach Raven 1.
 
 **Raven 2's admin (waits):**
 
-7. **Who connects:** choose **They connect to us** (the guide starts on
-   **We connect to them**, so change it). Click **Next**.
+7. **Who connects:** choose **They connect to us**, as agreed. Click
+   **Next**.
 8. **What to share:** leave both on **Everything**. Click **Next**.
 9. **Review & connect:** click **Connect**.
 
@@ -163,7 +164,7 @@ it.
 ## Case B: Raven and a TAK Server
 
 The other server is a stock TAK Server. Usually the TAK Server dials your
-hub. The guide picks this for you.
+hub, so agree on that and choose **They connect to us**.
 
 **On Raven (you):**
 
@@ -175,8 +176,9 @@ hub. The guide picks this for you.
    `takserver.jks`. Upload the CA, not the server certificate: Raven warns
    "This is not a certificate authority" if you pick the wrong one. Set
    **Partner name** (for example "County TAK").
-4. **Who connects:** leave **They connect to us**. Give the TAK admin the
-   address shown. If you choose **We connect to them** instead, the port
+4. **Who connects:** pick what you agreed with the TAK admin. Usually
+   the TAK Server dials the hub: choose **They connect to us** and give
+   the TAK admin the address shown. If you choose **We connect to them** instead, the port
    is the TAK Server's federation v2 port, usually 9001, and the TAK admin
    must add no outgoing connection to you.
 5. **What to share:** leave **Everything** both ways.
@@ -365,7 +367,7 @@ applicable**. Click **Run again** after fixing something.
 | Check | Fails when | Fix |
 |-------|-----------|-----|
 | **Their CA certificate is trusted** | "The hub no longer trusts this CA", or (warning) the connection isn't linked to a trusted CA. | "Remove this partner and connect it again with its CA file." For an unlinked connection: "Make sure the partner's CA is added under Advanced > Certificates". |
-| **Their CA is in the active policy** | "This partner is disabled, so the hub refuses its connections", or "The partner's certificate isn't in the active policy". Not applicable when we dial them. | Disabled: turn the partner's switch back on ("Enable the partner"). Missing from the policy: remove the partner and connect it again. (The check also suggests **Repair**, but Repair only restores this hub's own certificate.) |
+| **Their CA is in the active policy** | "This partner is disabled, so the hub refuses its connections", or "The partner's certificate isn't in the active policy". Not applicable when we dial them. | Disabled: turn the partner's switch back on ("Enable the partner"). Missing from the policy: "Remove the partner and connect it again (its certificate is kept if still trusted)". (**Repair** is only for this hub's own certificate.) |
 | **We share data with them** | No rule sends our data to them (card shows **Nothing**). | **Edit** the partner, **What to share** > **Choose Everything** > **Save & apply**. If this hub's own certificate is missing, use **Repair**. |
 | **We receive data from them** | No rule delivers their data to us. | Same as above. |
 | **Group filters will let data through** (warning) | A group filter is set on traffic from Raven. | Choose **Everything**, unless both sides use federated group mapping. See [why "Everything"](#what-to-share-why-everything). |
