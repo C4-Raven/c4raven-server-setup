@@ -480,6 +480,9 @@ The full walk-through is in
 every question it asks, what it prints at the end, logging in to the admin
 console, and what to do when it didn't install.
 
+To connect this server to another Raven, a TAK Server or another hub, see
+[Connecting C4 Raven servers with Federation Hub](docs/federation.md).
+
 #### If the Federation Hub step failed or was skipped
 
 Download the file from TAK.gov into `~/Downloads`, then, as your own
