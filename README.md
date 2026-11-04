@@ -463,9 +463,23 @@ move it aside and clone a fresh one. If `~/c4raven-updater` is not a git
 checkout at all, it is left alone and the clone goes to
 `~/c4raven-updater.clone` instead.
 
+If you installed Raven without a domain name, the step asks one question:
+`Host name or IP clients and Raven will use for Federation Hub [192.168.x.x]`.
+The hub's certificate is issued for exactly that name, and Raven and every
+partner TAK server must connect using it. If partners are only on your own
+network, press Enter to accept the LAN IP shown, and make sure that IP
+won't change (static IP or DHCP reservation). If partners connect over the
+internet, type the public DNS name that points at this server. With a
+domain set, the domain is used and nothing is asked.
+
 Re-running `install.sh` keeps the host name Federation Hub was set up with,
 even if you give a different domain this time. To change the hub's host,
 run `./install-fedhub.sh --host NEW_NAME` from c4raven-updater.
+
+The full walk-through is in
+[c4raven-updater's README, "Federation Hub"](https://github.com/C4-Raven/c4raven-updater#federation-hub):
+every question it asks, what it prints at the end, logging in to the admin
+console, and what to do when it didn't install.
 
 #### If the Federation Hub step failed or was skipped
 
@@ -473,7 +487,7 @@ Download the file from TAK.gov into `~/Downloads`, then, as your own
 sudo-capable user (not root, not `raven`):
 
 ```
-git clone https://github.com/C4-Raven/c4raven-updater.git ~/c4raven-updater   # or: cd ~/c4raven-updater && git pull
+git clone https://github.com/C4-Raven/c4raven-updater.git ~/c4raven-updater   # already have it? cd ~/c4raven-updater && git pull --ff-only
 cd ~/c4raven-updater && ./install-fedhub.sh            # finds the file in ~/Downloads, or asks for its path
 ./install-fedhub.sh --artifact "/path/to/takserver-fed-hub_X_all.deb"   # or the docker .zip
 ```
