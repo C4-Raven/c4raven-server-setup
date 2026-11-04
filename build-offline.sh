@@ -609,15 +609,19 @@ echo "$MEDIAMTX_SHA256  $PAYLOAD/mediamtx/$MTX" | sha256sum -c --quiet \
   || die "mediamtx checksum mismatch"
 
 # --- ATAK icon sets -----------------------------------------------------
-# The server downloads this file from GitHub on its first start and loads it
-# into the icons table; offline, postinst loads the bundled copy instead
-# (seed_icons.py). Pinned to a commit and checksummed like mediamtx.
-ICONSETS_URL=https://raw.githubusercontent.com/brian7704/OpenTAKServer-Installer/9d4406cdd572fe1e58894e4bec0151803d72f31e/iconsets.sqlite
+# c4raven-server vendors iconsets.sqlite in its package (raven/data/) and
+# loads it into the icons table on its first start, without network. The
+# payload also carries a copy, taken from the server checkout built above and
+# checksummed, so postinst can load it (seed_icons.py) should the server not
+# have done so yet; seed_icons.py leaves a non-empty table alone.
+ICONSETS_SRC="$WORK/src/server/raven/data/iconsets.sqlite"
 ICONSETS_SHA256=7733ac2d1959d2ab68b1e23d5b886b2847a5551f121110be59e6ef9a0299ce3a
 log "ATAK icon sets"
-curl -fsSL -o "$PAYLOAD/icons/iconsets.sqlite" "$ICONSETS_URL"
+[ -f "$ICONSETS_SRC" ] \
+  || die "c4raven-server @ $SERVER_SHA has no raven/data/iconsets.sqlite (the ATAK icon sets); build from a server revision that vendors it"
+cp "$ICONSETS_SRC" "$PAYLOAD/icons/iconsets.sqlite"
 echo "$ICONSETS_SHA256  $PAYLOAD/icons/iconsets.sqlite" | sha256sum -c --quiet \
-  || die "iconsets.sqlite checksum mismatch"
+  || die "iconsets.sqlite checksum mismatch (raven/data/iconsets.sqlite in c4raven-server @ $SERVER_SHA)"
 
 # --- ATAK plugin --------------------------------------------------------
 log "CROW Remote Clear ATAK plugin"

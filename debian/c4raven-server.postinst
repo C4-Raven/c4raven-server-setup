@@ -724,9 +724,9 @@ EOF
         esac
       done
 
-      # ATAK icon sets: the server downloads these from GitHub on its first
-      # start, which an offline machine cannot do; load the bundled copy
-      # into the (still empty) icons table instead. Exit 3 = already there.
+      # ATAK icon sets: the server loads its own vendored copy on first
+      # start; this is the fallback should it not have done so yet -- load
+      # the bundled copy into a still-empty icons table. Exit 3 = already there.
       if [ -f "$OFFLINE_DIR/icons/iconsets.sqlite" ] && [ -f "$PKGDATA/seed_icons.py" ]; then
         ICONS=0
         raven_exec "python '$PKGDATA/seed_icons.py' '$OFFLINE_DIR/icons/iconsets.sqlite'" || ICONS=$?

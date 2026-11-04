@@ -1,10 +1,10 @@
 """
 Raven server -- load the bundled ATAK icon sets into an empty icons table.
 
-On its first start the server downloads iconsets.sqlite from GitHub and copies
-its `icons` rows into the database. An offline install cannot do that, so the
-offline .deb ships the same file and the postinst runs this once the server's
-migrations have created the table.
+On its first start the server copies the `icons` rows of its own vendored
+iconsets.sqlite (raven/data/) into the database. The offline .deb ships the
+same file and the postinst runs this once the server's migrations have created
+the table, as a fallback should the server not have loaded them yet.
 
   * icons table already has rows:  leave it alone, exit 3
   * icons table empty:             copy every row from the bundled file, exit 0

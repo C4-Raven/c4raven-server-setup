@@ -53,7 +53,7 @@ Depends: debconf (>= 0.5),
  nodejs (>= 20.19),
  rsync
 Description: C4 Raven TAK server -- full stack, single package
- A security-hardened fork of the upstream project this is derived from.
+ A security-hardened TAK (Team Awareness Kit) server.
  This package installs the whole server: the Raven backend, the C4 Raven UI
  frontend served from nginx's webroot, a dedicated certificate authority,
  mediamtx for video streaming, and the systemd units that tie it all

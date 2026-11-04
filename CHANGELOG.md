@@ -35,6 +35,10 @@ they deploy.
   `install-fedhub.sh`, the installer prints how to replace it. Fetching it
   gives up after about two minutes on a server with no internet instead
   of hanging.
+- The offline build takes the ATAK icon sets (`iconsets.sqlite`) from
+  the c4raven-server checkout it builds (`raven/data/`) instead of
+  downloading them, and still checks their SHA-256. A server revision
+  without that file stops the build with an error.
 
 ## 2.3.0
 

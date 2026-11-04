@@ -510,8 +510,8 @@ selinux_fix_certs() {
 # instead, so the caller can warn rather than abort.
 #
 # Deliberately NOT here: pgloader. The old installer pulled it in, but nothing
-# in any C4 Raven repo has ever invoked it -- it was a leftover from the
-# upstream project's sqlite-to-postgres migration path.
+# in any C4 Raven repo has ever invoked it -- it was a leftover from a
+# sqlite-to-postgres migration path this server does not have.
 # ---------------------------------------------------------------------------
 stack_packages() {
   case "${DISTRO_FAMILY:-}" in

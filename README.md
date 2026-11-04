@@ -9,9 +9,8 @@
 # C4 Raven server setup
 
 Setup files for a fresh deployment of our TAK (Team Awareness Kit) server —
-a Raven-branded, security-hardened
-fork of [the upstream project](https://www.opentakserver.io/)
-([c4raven-server](https://github.com/C4-Raven/c4raven-server)), paired with
+the security-hardened
+[c4raven-server](https://github.com/C4-Raven/c4raven-server) backend, paired with
 the [C4 Raven UI](https://github.com/C4-Raven/c4raven-ui) frontend.
 
 ## Supported platforms
@@ -573,8 +572,8 @@ the same caveat that it floats to `main`.
 [c4raven-updater](https://github.com/C4-Raven/c4raven-updater) is the
 more careful alternative, and works on servers installed by `install.sh`
 or the online `.deb` (the `raven` layout) as well as on the older
-single-user layout (`~/.opentakserver_venv`, `~/ots`,
-`opentakserver.service`), which this repo's `update.sh` stops on with
+single-user layout (`~/.raven_venv`, `~/ots`, `raven.service`,
+`/var/www/html/raven`), which this repo's `update.sh` stops on with
 "No existing install found". It picks the layout itself:
 
 ```
@@ -664,10 +663,10 @@ carries `finish-install.sh` and `diagnose-login.sh`; see
   `cd /opt/raven/c4raven-server && FLASK_APP=raven.app RAVEN_DATA_FOLDER=/opt/raven/data poetry run python /opt/raven/seed_admin.py`
   (the `.deb` keeps its copy at `/usr/share/c4raven-server/seed_admin.py`).
 
-One dependency has gone away: **`pgloader`**. It was declared since the
-upstream project but is not invoked anywhere in any C4 Raven repo — it
-belonged to upstream's sqlite-to-postgres migration path, which this
-fork does not have. It is out of `debian/control` and was never carried
+One dependency has gone away: **`pgloader`**. It used to be declared but
+is not invoked anywhere in any C4 Raven repo — it belonged to a
+sqlite-to-postgres migration path this server does not have. It is out
+of `debian/control` and was never carried
 into the RPM. Existing servers are unaffected; `sudo apt remove
 pgloader` if you want the disk back.
 
@@ -700,3 +699,7 @@ more: no source checkout, and a plain venv at `/opt/raven/venv`
 symlinked into `/opt/raven/venvs/`. See
 [`docs/rocky-el9.md`](docs/rocky-el9.md) for the full list and for what
 to check first when something is broken.
+
+## License
+
+GPL-3.0-or-later (see LICENSE). Portions © Brian (brian7704) and contributors.

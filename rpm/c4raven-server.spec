@@ -38,7 +38,7 @@ Name:           c4raven-server
 Version:        %{?pkg_version}%{!?pkg_version:0.0.0}
 Release:        1%{?dist}
 Summary:        C4 Raven TAK server -- full stack, single package
-License:        Proprietary
+License:        GPL-3.0-or-later
 URL:            https://github.com/C4-Raven/c4raven-server-setup
 Source0:        %{name}-%{version}-stage.tar.gz
 
@@ -132,7 +132,7 @@ Requires(preun):  systemd
 Requires(postun): systemd
 
 %description
-A security-hardened fork of the upstream project this is derived from.
+A security-hardened TAK (Team Awareness Kit) server.
 This package installs the whole server: the Raven backend (cloned and built
 with Poetry on first install), the C4 Raven UI frontend (built with Yarn and
 deployed to nginx's webroot), a dedicated certificate authority, mediamtx for
